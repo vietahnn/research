@@ -13,6 +13,7 @@ from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
 from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.tcn import FeatureIsolatedTCN
 
 import uuid
 
@@ -236,15 +237,32 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4,
+                 use_tcn=False, tcn_num_layers=4, tcn_kernel_size=3, tcn_dropout=0.1):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
+        self.use_tcn = use_tcn
         self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=24))
 
         self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
+        
+        # Initialize TCN if enabled
+        if self.use_tcn:
+            self.tcn = FeatureIsolatedTCN(
+                l_hand_dim=42, r_hand_dim=42, body_dim=24,
+                num_layers=tcn_num_layers,
+                hidden_dim_factor=1.5,
+                kernel_size=tcn_kernel_size,
+                dropout=tcn_dropout
+            )
+            print(f"TCN enabled: {tcn_num_layers} layers, kernel={tcn_kernel_size}, dropout={tcn_dropout}")
+        else:
+            self.tcn = None
+            print("TCN disabled")
+        
         self.transformer = FeatureIsolatedTransformer(
             [42, 42, 24], [3, 3, 2, 9], num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
@@ -274,6 +292,23 @@ class SiFormer(nn.Module):
         l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
         r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
         body_in = new_body + self.body_embedding  # Shape remains the same
+        
+        # Apply TCN if enabled (with residual fusion)
+        if self.use_tcn and self.tcn is not None:
+            # TCN expects [batch, seq_len, features], need to transpose from [seq_len, batch, features]
+            l_hand_tcn_in = l_hand_in.transpose(0, 1)  # [batch, seq_len, 42]
+            r_hand_tcn_in = r_hand_in.transpose(0, 1)  # [batch, seq_len, 42]
+            body_tcn_in = body_in.transpose(0, 1)      # [batch, seq_len, 24]
+            
+            # Apply TCN
+            l_hand_tcn_out, r_hand_tcn_out, body_tcn_out = self.tcn(
+                l_hand_tcn_in, r_hand_tcn_in, body_tcn_in
+            )
+            
+            # Residual fusion: original + TCN features
+            l_hand_in = l_hand_in + l_hand_tcn_out.transpose(0, 1)
+            r_hand_in = r_hand_in + r_hand_tcn_out.transpose(0, 1)
+            body_in = body_in + body_tcn_out.transpose(0, 1)
 
         # (seq_len, batch_size, feature_size) -> (batch_size, 1, feature_size): (24, 1, 108)
         transformer_output = self.transformer(

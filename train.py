@@ -96,6 +96,16 @@ def get_default_args():
                         help="Determines whether to use bi-directional cross-modal attention between body parts")
     parser.add_argument("--cross_attn_heads", type=int, default=3,
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
+    
+    # Temporal Convolutional Network (TCN) settings
+    parser.add_argument("--use_tcn", type=bool, default=True,
+                        help="Determines whether to use TCN for temporal feature extraction (default: False)")
+    parser.add_argument("--tcn_num_layers", type=int, default=4,
+                        help="Number of TCN layers with exponentially increasing dilations (default: 4, receptive field ~31 frames)")
+    parser.add_argument("--tcn_kernel_size", type=int, default=3,
+                        help="Kernel size for TCN convolutions (default: 3, options: 3, 5, 7)")
+    parser.add_argument("--tcn_dropout", type=float, default=0.1,
+                        help="Dropout rate for TCN layers (default: 0.1)")
 
     return parser
 
@@ -135,7 +145,10 @@ def train(args):
                               num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers, device=device,
                               IA_encoder=args.IA_encoder, IA_decoder=args.IA_decoder,
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
-                              cross_attn_heads=args.cross_attn_heads)
+                              cross_attn_heads=args.cross_attn_heads,
+                              use_tcn=args.use_tcn, tcn_num_layers=args.tcn_num_layers,
+                              tcn_kernel_size=args.tcn_kernel_size, tcn_dropout=args.tcn_dropout)
+        print("Using TCNS")
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
                            num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers)
