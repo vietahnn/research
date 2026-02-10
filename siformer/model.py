@@ -13,6 +13,7 @@ from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
 from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.positional_encoding import SpatialTemporalPE
 
 import uuid
 
@@ -236,13 +237,26 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4,
+                 pe_type='sinusoidal', dropout=0.1):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
-        # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
-        self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
-        self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
-        self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=24))
+        print(f"Using Spatial-Temporal PE (encoding type: {pe_type})")
+        
+        # Positional Encoding: Combined spatial and temporal
+        # Both use the same encoding type (learnable or sinusoidal)
+        self.l_hand_embedding = SpatialTemporalPE(
+            num_joints=21, d_coords=2, seq_len=seq_len,
+            encoding_type=pe_type, dropout=dropout
+        )
+        self.r_hand_embedding = SpatialTemporalPE(
+            num_joints=21, d_coords=2, seq_len=seq_len,
+            encoding_type=pe_type, dropout=dropout
+        )
+        self.body_embedding = SpatialTemporalPE(
+            num_joints=12, d_coords=2, seq_len=seq_len,
+            encoding_type=pe_type, dropout=dropout
+        )
 
         self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
         self.transformer = FeatureIsolatedTransformer(
@@ -269,11 +283,10 @@ class SiFormer(nn.Module):
         new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
         new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
 
-        # feature_map = self.feature_extractor(new_inputs)
-        # transformer_in = feature_map + self.pos_embedding
-        l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
-        r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
-        body_in = new_body + self.body_embedding  # Shape remains the same
+        # Apply spatial-temporal positional encoding
+        l_hand_in = self.l_hand_embedding(new_l_hand)
+        r_hand_in = self.r_hand_embedding(new_r_hand)
+        body_in = self.body_embedding(new_body)
 
         # (seq_len, batch_size, feature_size) -> (batch_size, 1, feature_size): (24, 1, 108)
         transformer_output = self.transformer(
