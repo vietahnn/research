@@ -12,7 +12,6 @@ from siformer.attention import AttentionLayer, ProbAttention, FullAttention
 from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
-from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
 
 import uuid
 
@@ -55,18 +54,16 @@ class FeatureIsolatedTransformer(nn.Transformer):
         self.r_hand_encoder = self.get_custom_encoder(d_model_list[1], nhead_list[1])
         self.body_encoder = self.get_custom_encoder(d_model_list[2], nhead_list[2])
         
-        # Initialize cross-modal attention if enabled
+        # Initialize simplified cross-modal attention (teledeaf-care-model style)
         if self.use_cross_attention:
-            print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
-            self.cross_modal_attn = CrossModalAttentionFusion(
-                d_lhand=d_model_list[0],
-                d_rhand=d_model_list[1],
-                d_body=d_model_list[2],
-                num_heads=cross_attn_heads,
-                dropout=dropout
-            )
+            print(f"Initializing Simplified Cross-Modal Attention (teledeaf-care-model style)")
+            self.l2body_attn = nn.MultiheadAttention(d_model_list[0], num_heads=1, batch_first=True)
+            self.r2l_attn = nn.MultiheadAttention(d_model_list[1], num_heads=1, batch_first=True)
+            self.body_to_hand_proj = nn.Linear(d_model_list[2], d_model_list[0])  # body (120) -> hand (63)
         else:
-            self.cross_modal_attn = None
+            self.l2body_attn = None
+            self.r2l_attn = None
+            self.body_to_hand_proj = None
             
         self.decoder = self.get_custom_decoder(nhead_list[-1])
         self._reset_parameters()
@@ -167,11 +164,31 @@ class FeatureIsolatedTransformer(nn.Transformer):
             r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
             body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
 
-        # Apply cross-modal attention if enabled
-        if self.use_cross_attention and self.cross_modal_attn is not None:
-            l_hand_memory, r_hand_memory, body_memory = self.cross_modal_attn(
-                l_hand_memory, r_hand_memory, body_memory
-            )
+        # Apply simplified cross-modal attention if enabled (teledeaf-care-model style)
+        if self.use_cross_attention:
+            # Convert from (seq_len, batch_size, features) to (batch_size, seq_len, features)
+            l_hand_memory_t = l_hand_memory.transpose(0, 1)
+            r_hand_memory_t = r_hand_memory.transpose(0, 1)
+            body_memory_t = body_memory.transpose(0, 1)
+            
+            # Parallel Body -> Hands attention
+            body_memory_proj_l = self.body_to_hand_proj(body_memory_t)
+            body_memory_proj_r = self.body_to_hand_proj(body_memory_t)
+
+            l_crossed, _ = self.l2body_attn(l_hand_memory_t, body_memory_proj_l, body_memory_proj_l)
+            r_crossed_body, _ = self.r2l_attn(r_hand_memory_t, body_memory_proj_r, body_memory_proj_r)
+
+            # Combine Body attention results (simple addition)
+            l_hand_memory_t = l_crossed + l_hand_memory_t
+            r_hand_memory_temp = r_crossed_body + r_hand_memory_t
+
+            # Optional: Hand-to-Hand attention
+            r_crossed_l, _ = self.r2l_attn(r_hand_memory_temp, l_hand_memory_t, l_hand_memory_t)
+            r_hand_memory_t = r_crossed_l + r_hand_memory_temp
+            
+            # Convert back to (seq_len, batch_size, features)
+            l_hand_memory = l_hand_memory_t.transpose(0, 1)
+            r_hand_memory = r_hand_memory_t.transpose(0, 1)
 
         full_memory = torch.cat((l_hand_memory, r_hand_memory, body_memory), -1)
 
