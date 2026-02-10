@@ -98,7 +98,7 @@ def get_default_args():
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
     
     # Spatial-Temporal Positional Encoding settings (ALWAYS ENABLED)
-    parser.add_argument("--pe_type", type=str, default='learnable', choices=['learnable', 'sinusoidal'],
+    parser.add_argument("--pe_type", type=str, default='sinusoidal', choices=['learnable', 'sinusoidal'],
                         help="Positional encoding type for BOTH spatial and temporal: 'learnable' (default) or 'sinusoidal'")
 
     return parser
