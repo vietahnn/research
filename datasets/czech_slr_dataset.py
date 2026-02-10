@@ -6,6 +6,7 @@ import torch.utils.data as torch_data
 
 from random import randrange
 from augmentations import *
+from augmentations.temporal_augmentations import augment_temporal_mask
 from normalization.body_normalization import BODY_IDENTIFIERS
 from normalization.hand_normalization import HAND_IDENTIFIERS
 from normalization.body_normalization import normalize_single_dict as normalize_single_body_dict
@@ -153,7 +154,7 @@ class CzechSLRDataset(torch_data.Dataset):
 
         depth_map = tensor_to_dictionary(depth_map)
 
-        # Apply potential augmentations
+        # Apply spatial augmentations
         if self.augmentations and random.random() < self.augmentations_prob:
 
             selected_aug = randrange(5)
@@ -172,6 +173,11 @@ class CzechSLRDataset(torch_data.Dataset):
 
             if selected_aug == 4:
                 depth_map = depth_map
+        
+        # Apply temporal masking (ALWAYS enabled during training, independent of spatial aug)
+        # This runs with 50% probability, uses optimal contiguous block masking
+        if self.augmentations:
+            depth_map = augment_temporal_mask(depth_map, mask_ratio=0.15, mask_prob=0.5)
 
         if self.normalize:
             depth_map = normalize_single_body_dict(depth_map)
