@@ -238,7 +238,7 @@ class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
                  use_cross_attention=False, cross_attn_heads=4,
-                 use_tcn=False, tcn_num_layers=4, tcn_kernel_size=3, tcn_dropout=0.1):
+                 use_tcn=False, tcn_num_layers=4, tcn_kernel_size=3, tcn_dropout=0.1, tcn_hidden_dim_factor=1.5):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
@@ -254,11 +254,11 @@ class SiFormer(nn.Module):
             self.tcn = FeatureIsolatedTCN(
                 l_hand_dim=42, r_hand_dim=42, body_dim=24,
                 num_layers=tcn_num_layers,
-                hidden_dim_factor=1.5,
+                hidden_dim_factor=tcn_hidden_dim_factor,
                 kernel_size=tcn_kernel_size,
                 dropout=tcn_dropout
             )
-            print(f"TCN enabled: {tcn_num_layers} layers, kernel={tcn_kernel_size}, dropout={tcn_dropout}")
+            print(f"TCN enabled: {tcn_num_layers} layers, kernel={tcn_kernel_size}, dropout={tcn_dropout}, hidden_factor={tcn_hidden_dim_factor}")
         else:
             self.tcn = None
             print("TCN disabled")

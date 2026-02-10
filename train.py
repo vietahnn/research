@@ -106,6 +106,8 @@ def get_default_args():
                         help="Kernel size for TCN convolutions (default: 3, options: 3, 5, 7)")
     parser.add_argument("--tcn_dropout", type=float, default=0.1,
                         help="Dropout rate for TCN layers (default: 0.1)")
+    parser.add_argument("--tcn_hidden_dim_factor", type=float, default=1.5,
+                        help="Factor to expand hidden dimensions in TCN (default: 1.5, try 2.0 for more capacity)")
 
     return parser
 
@@ -147,7 +149,8 @@ def train(args):
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
                               cross_attn_heads=args.cross_attn_heads,
                               use_tcn=args.use_tcn, tcn_num_layers=args.tcn_num_layers,
-                              tcn_kernel_size=args.tcn_kernel_size, tcn_dropout=args.tcn_dropout)
+                              tcn_kernel_size=args.tcn_kernel_size, tcn_dropout=args.tcn_dropout,
+                              tcn_hidden_dim_factor=args.tcn_hidden_dim_factor)
         print("Using TCNS")
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
