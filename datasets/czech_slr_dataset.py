@@ -177,6 +177,7 @@ class CzechSLRDataset(torch_data.Dataset):
         # Apply temporal masking (ALWAYS enabled during training, independent of spatial aug)
         # This runs with 50% probability, uses optimal contiguous block masking
         if self.augmentations:
+            print("using augment temporal masking")
             depth_map = augment_temporal_mask(depth_map, mask_ratio=0.15, mask_prob=0.5)
 
         if self.normalize:
