@@ -96,6 +96,10 @@ def get_default_args():
                         help="Determines whether to use bi-directional cross-modal attention between body parts")
     parser.add_argument("--cross_attn_heads", type=int, default=3,
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
+    
+    # Multi-Scale Temporal Modeling settings
+    parser.add_argument("--use_multi_scale", type=bool, default=True,
+                        help="Determines whether to use Multi-Scale Temporal Modeling for varying signing speeds")
 
     return parser
 
@@ -135,7 +139,7 @@ def train(args):
                               num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers, device=device,
                               IA_encoder=args.IA_encoder, IA_decoder=args.IA_decoder,
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
-                              cross_attn_heads=args.cross_attn_heads)
+                              cross_attn_heads=args.cross_attn_heads, use_multi_scale=args.use_multi_scale)
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
                            num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers)

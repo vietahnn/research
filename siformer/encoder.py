@@ -48,6 +48,7 @@ class EncoderLayer(nn.Module):
                 dropout=dropout
             )
             self.norm_multi_scale = nn.LayerNorm(d_model)
+            print(f"✓ EncoderLayer: Multi-Scale Temporal Module enabled (d_model={d_model}, scales=[1,3,5,7])")
         
         self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1)
         self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1)
@@ -143,7 +144,7 @@ class PBEEncoder(nn.TransformerEncoder):
             self.multi_scale_norms = nn.ModuleList([
                 nn.LayerNorm(d_model) for _ in range(num_layers)
             ])
-            print(f"PBEEncoder: Multi-Scale Temporal enabled for {num_layers} layers with d_model={d_model}")
+            print(f"✓ PBEEncoder: Multi-Scale Temporal enabled for {num_layers} layers (d_model={d_model}, scales=[1,3,5,7])")
 
     def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 training: bool = True):
