@@ -272,8 +272,14 @@ class SiFormer(nn.Module):
 
     def forward(self, l_hand, r_hand, body, training):
         batch_size = l_hand.size(0)
-        # (batch_size, seq_len, respected_feature_size, coordinates): (24, 204, 54, 2)
-        # -> (batch_size, seq_len, feature_size):  (24, 204, 108)
+        # (batch_size, seq_len, respected_feature_size, coordinates): (24, 204, 21, 2)
+        
+        # Apply Hand GCN for spatial joint modeling BEFORE flattening
+        if self.use_hand_gcn:
+            # GCN expects (batch, seq, num_joints, 2)
+            l_hand, r_hand = self.hand_gcn(l_hand, r_hand)
+        
+        # Now flatten: (batch_size, seq_len, num_joints, 2) -> (batch_size, seq_len, feature_size)
         new_l_hand = l_hand.view(l_hand.size(0), l_hand.size(1), l_hand.size(2) * l_hand.size(3))
         new_r_hand = r_hand.view(r_hand.size(0), r_hand.size(1), r_hand.size(2) * r_hand.size(3))
         body = body.view(body.size(0), body.size(1), body.size(2) * body.size(3))
@@ -283,10 +289,6 @@ class SiFormer(nn.Module):
         new_l_hand = new_l_hand.permute(1, 0, 2).type(dtype=torch.float32)
         new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
         new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
-
-        # Apply Hand GCN for spatial joint modeling
-        if self.use_hand_gcn:
-            new_l_hand, new_r_hand = self.hand_gcn(new_l_hand, new_r_hand)
 
         # feature_map = self.feature_extractor(new_inputs)
         # transformer_in = feature_map + self.pos_embedding
