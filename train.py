@@ -94,7 +94,7 @@ def get_default_args():
     # Cross-Modal Attention settings
     parser.add_argument("--use_cross_attention", type=bool, default=True, 
                         help="Determines whether to use cross-modal attention between body parts")
-    parser.add_argument("--cross_attn_heads", type=int, default=2,
+    parser.add_argument("--cross_attn_heads", type=int, default=3,
                         help="Number of attention heads for cross-modal attention (default: 2, must divide 42 and 24)")
     parser.add_argument("--cross_attn_direction", type=str, default='body_to_hands',
                         choices=['body_to_hands', 'hands_to_body', 'hands_bidirectional', 'bidirectional'],
