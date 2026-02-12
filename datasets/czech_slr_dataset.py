@@ -11,6 +11,100 @@ from normalization.hand_normalization import HAND_IDENTIFIERS
 from normalization.body_normalization import normalize_single_dict as normalize_single_body_dict
 from normalization.hand_normalization import normalize_single_dict as normalize_single_hand_dict
 
+
+def detect_key_frames(depth_map_dict: dict, target_frames: int = 120, min_motion_threshold: float = 0.001):
+    """
+    Detect key frames based on motion magnitude.
+    
+    Args:
+        depth_map_dict: Dictionary containing landmark positions over time
+        target_frames: Target number of frames to keep (default: 120, reduced from ~204)
+        min_motion_threshold: Minimum motion to consider a frame as important
+    
+    Returns:
+        List of selected frame indices
+    """
+    # Get sequence length from any landmark
+    sequence_len = len(next(iter(depth_map_dict.values()), None))
+    
+    # If sequence is already short, keep all frames
+    if sequence_len <= target_frames:
+        return list(range(sequence_len))
+    
+    # Calculate motion magnitude for each frame
+    motion_magnitudes = np.zeros(sequence_len - 1)
+    
+    for identifier, positions in depth_map_dict.items():
+        for frame_idx in range(sequence_len - 1):
+            # Calculate Euclidean distance between consecutive frames
+            diff_x = positions[frame_idx + 1][0] - positions[frame_idx][0]
+            diff_y = positions[frame_idx + 1][1] - positions[frame_idx][1]
+            motion = np.sqrt(diff_x**2 + diff_y**2)
+            motion_magnitudes[frame_idx] += motion
+    
+    # Normalize motion magnitudes
+    motion_magnitudes = motion_magnitudes / len(depth_map_dict)
+    
+    # Always keep first and last frame
+    selected_indices = [0, sequence_len - 1]
+    
+    # Calculate window size for uniform coverage
+    window_size = max(1, (sequence_len - 2) // (target_frames - 2))
+    
+    # Select key frames from each window based on motion magnitude
+    for window_start in range(1, sequence_len - 1, window_size):
+        window_end = min(window_start + window_size, sequence_len - 1)
+        
+        # Find frame with maximum motion in this window
+        window_motions = motion_magnitudes[window_start:window_end]
+        
+        if len(window_motions) > 0:
+            max_motion_idx = window_start + np.argmax(window_motions)
+            
+            # Only add if motion is significant or we need more frames
+            if motion_magnitudes[max_motion_idx] > min_motion_threshold or len(selected_indices) < target_frames:
+                if max_motion_idx not in selected_indices:
+                    selected_indices.append(max_motion_idx)
+    
+    # Sort indices
+    selected_indices = sorted(selected_indices)
+    
+    # If we have too many, keep the ones with highest motion
+    if len(selected_indices) > target_frames:
+        # Keep first and last
+        first_last = [selected_indices[0], selected_indices[-1]]
+        middle_indices = selected_indices[1:-1]
+        
+        # Sort middle indices by their motion magnitude
+        middle_with_motion = [(idx, motion_magnitudes[min(idx, len(motion_magnitudes)-1)]) 
+                               for idx in middle_indices]
+        middle_with_motion.sort(key=lambda x: x[1], reverse=True)
+        
+        # Keep top (target_frames - 2) middle frames
+        top_middle = sorted([idx for idx, _ in middle_with_motion[:target_frames-2]])
+        selected_indices = [first_last[0]] + top_middle + [first_last[1]]
+    
+    return selected_indices
+
+
+def apply_frame_sampling(depth_map_dict: dict, selected_indices: list) -> dict:
+    """
+    Apply frame sampling to the depth map dictionary.
+    
+    Args:
+        depth_map_dict: Dictionary containing landmark positions
+        selected_indices: List of frame indices to keep
+    
+    Returns:
+        Dictionary with only selected frames
+    """
+    sampled_dict = {}
+    
+    for identifier, positions in depth_map_dict.items():
+        sampled_dict[identifier] = [positions[idx] for idx in selected_indices]
+    
+    return sampled_dict
+
 ORI_HAND_IDENTIFIERS = HAND_IDENTIFIERS
 HAND_IDENTIFIERS = [id + "_0" for id in HAND_IDENTIFIERS] + [id + "_1" for id in HAND_IDENTIFIERS]
 
@@ -119,12 +213,15 @@ class CzechSLRDataset(torch_data.Dataset):
     labels: [np.ndarray]
 
     def __init__(self, dataset_filename: str, num_labels=5, transform=None, augmentations=False,
-                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None):
+                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None,
+                 use_frame_sampling=True, target_frames=120):
         """
         Initiates the HPOESDataset with the pre-loaded data from the h5 file.
 
         :param dataset_filename: Path to the h5 file
         :param transform: Any data transformation to be applied (default: None)
+        :param use_frame_sampling: Whether to apply key frame sampling (default: True)
+        :param target_frames: Target number of frames after sampling (default: 120)
         """
 
         loaded_data = load_dataset(file_location=dataset_filename, num_remove=num_remove, remove_from=remove_from)
@@ -139,6 +236,8 @@ class CzechSLRDataset(torch_data.Dataset):
         self.augmentations = augmentations
         self.augmentations_prob = augmentations_prob
         self.normalize = normalize
+        self.use_frame_sampling = use_frame_sampling
+        self.target_frames = target_frames
 
     def __getitem__(self, idx):
         """
@@ -172,6 +271,11 @@ class CzechSLRDataset(torch_data.Dataset):
 
             if selected_aug == 4:
                 depth_map = depth_map
+
+        # Apply frame sampling to reduce temporal redundancy
+        if self.use_frame_sampling:
+            key_frame_indices = detect_key_frames(depth_map, target_frames=self.target_frames)
+            depth_map = apply_frame_sampling(depth_map, key_frame_indices)
 
         if self.normalize:
             depth_map = normalize_single_body_dict(depth_map)

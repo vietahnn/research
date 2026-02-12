@@ -271,9 +271,10 @@ class SiFormer(nn.Module):
 
         # feature_map = self.feature_extractor(new_inputs)
         # transformer_in = feature_map + self.pos_embedding
-        l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
-        r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
-        body_in = new_body + self.body_embedding  # Shape remains the same
+        # Use adaptive positional embedding based on actual sequence length
+        l_hand_in = new_l_hand + self.l_hand_embedding[:new_l_hand.size(0)]  # Shape remains the same
+        r_hand_in = new_r_hand + self.r_hand_embedding[:new_r_hand.size(0)]  # Shape remains the same
+        body_in = new_body + self.body_embedding[:new_body.size(0)]  # Shape remains the same
 
         # (seq_len, batch_size, feature_size) -> (batch_size, 1, feature_size): (24, 1, 108)
         transformer_output = self.transformer(
