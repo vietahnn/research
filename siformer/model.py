@@ -13,6 +13,7 @@ from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
 from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.adaptive_temporal_pooling import MultiModalAdaptivePooling
 
 import uuid
 
@@ -29,7 +30,8 @@ class FeatureIsolatedTransformer(nn.Transformer):
                  inner_classifiers_config: list = None, patience: int = 1, use_pyramid_encoder: bool = False,
                  distil: bool = False, projections_config: list = None,
                  IA_encoder: bool = False, IA_decoder: bool = False, device=None,
-                 use_cross_attention: bool = False, cross_attn_heads: int = 4):
+                 use_cross_attention: bool = False, cross_attn_heads: int = 4,
+                 use_adaptive_pooling: bool = False, pooling_type: str = 'learnable-query'):
 
         super(FeatureIsolatedTransformer, self).__init__(sum(d_model_list), nhead_list[-1], num_encoder_layers,
                                                          num_decoder_layers, dim_feedforward, dropout, activation)
@@ -51,6 +53,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
         self.selected_attn = selected_attn
         self.output_attention = output_attention
         self.use_cross_attention = use_cross_attention
+        self.use_adaptive_pooling = use_adaptive_pooling
         self.l_hand_encoder = self.get_custom_encoder(d_model_list[0], nhead_list[0])
         self.r_hand_encoder = self.get_custom_encoder(d_model_list[1], nhead_list[1])
         self.body_encoder = self.get_custom_encoder(d_model_list[2], nhead_list[2])
@@ -67,6 +70,21 @@ class FeatureIsolatedTransformer(nn.Transformer):
             )
         else:
             self.cross_modal_attn = None
+        
+        # Initialize adaptive temporal pooling if enabled
+        if self.use_adaptive_pooling:
+            print(f"Initializing Adaptive Temporal Pooling with type: {pooling_type}")
+            self.adaptive_pooling = MultiModalAdaptivePooling(
+                d_lhand=d_model_list[0],
+                d_rhand=d_model_list[1],
+                d_body=d_model_list[2],
+                num_heads=4,
+                pooling_type=pooling_type,
+                separate_pooling=False,
+                dropout=dropout
+            )
+        else:
+            self.adaptive_pooling = None
             
         self.decoder = self.get_custom_decoder(nhead_list[-1])
         self._reset_parameters()
@@ -173,6 +191,16 @@ class FeatureIsolatedTransformer(nn.Transformer):
                 l_hand_memory, r_hand_memory, body_memory
             )
 
+        # Use adaptive pooling instead of decoder if enabled
+        if self.use_adaptive_pooling and self.adaptive_pooling is not None:
+            # Adaptive pooling: (L, B, D) -> (B, D)
+            pooled, attention_weights = self.adaptive_pooling(
+                l_hand_memory, r_hand_memory, body_memory
+            )
+            # Return pooled features directly (will be projected to classes in SiFormer)
+            return pooled
+        
+        # Standard decoder path
         full_memory = torch.cat((l_hand_memory, r_hand_memory, body_memory), -1)
 
         if self.use_IA_decoder:
@@ -236,7 +264,8 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4, use_adaptive_pooling=True,
+                 pooling_type='learnable-query'):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
@@ -244,15 +273,17 @@ class SiFormer(nn.Module):
         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=24))
 
+        self.use_adaptive_pooling = use_adaptive_pooling
         self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
         self.transformer = FeatureIsolatedTransformer(
             [42, 42, 24], [3, 3, 2, 9], num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
             inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
             patience=patience, use_pyramid_encoder=False, distil=False,
-            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads
+            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads,
+            use_adaptive_pooling=use_adaptive_pooling, pooling_type=pooling_type
         )
-        print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}")
+        print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}, adaptive_pooling {use_adaptive_pooling}")
         self.projection = nn.Linear(num_hid, num_classes)
 
     def forward(self, l_hand, r_hand, body, training):
@@ -276,14 +307,20 @@ class SiFormer(nn.Module):
         body_in = new_body + self.body_embedding  # Shape remains the same
 
         # (seq_len, batch_size, feature_size) -> (batch_size, 1, feature_size): (24, 1, 108)
-        transformer_output = self.transformer(
-            [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
-        ).transpose(0, 1)
-        # print("transformer_output.shape")
-        # print(transformer_output.shape)
-
-        # (batch_size, 1, feature_size) -> (batch_size, num_class): (24, 100)
-        out = self.projection(transformer_output).squeeze()
+        if self.use_adaptive_pooling:
+            # Adaptive pooling returns (batch, feature_size) directly
+            transformer_output = self.transformer(
+                [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
+            )
+            # transformer_output is already (batch, feature_size), no need to transpose
+            out = self.projection(transformer_output)
+        else:
+            # Standard decoder path: returns (1, batch, feature_size)
+            transformer_output = self.transformer(
+                [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
+            ).transpose(0, 1)
+            # (batch_size, 1, feature_size) -> (batch_size, num_class): (24, 100)
+            out = self.projection(transformer_output).squeeze()
         return out
 
     @staticmethod

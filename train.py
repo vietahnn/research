@@ -96,6 +96,13 @@ def get_default_args():
                         help="Determines whether to use bi-directional cross-modal attention between body parts")
     parser.add_argument("--cross_attn_heads", type=int, default=3,
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
+    
+    # Adaptive Temporal Pooling settings
+    parser.add_argument("--use_adaptive_pooling", type=bool, default=True,
+                        help="Determines whether to use adaptive temporal pooling instead of decoder")
+    parser.add_argument("--pooling_type", type=str, default="learnable-query",
+                        choices=["attention", "self-attention", "learnable-query"],
+                        help="Type of adaptive pooling mechanism")
 
     return parser
 
@@ -135,7 +142,9 @@ def train(args):
                               num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers, device=device,
                               IA_encoder=args.IA_encoder, IA_decoder=args.IA_decoder,
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
-                              cross_attn_heads=args.cross_attn_heads)
+                              cross_attn_heads=args.cross_attn_heads,
+                              use_adaptive_pooling=args.use_adaptive_pooling,
+                              pooling_type=args.pooling_type)
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
                            num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers)
