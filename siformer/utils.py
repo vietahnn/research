@@ -6,12 +6,42 @@ import torch
 import torch.nn.functional as F
 import time
 from statistics import mean
+from siformer.contrastive_loss import CrossModalContrastiveLoss
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None):
+def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, 
+                use_contrastive=True, contrastive_weight=0.5):
+    """
+    Train for one epoch with optional cross-modal contrastive learning.
+    
+    Args:
+        model: SiFormer model
+        dataloader: Training data loader
+        criterion: Classification loss (CrossEntropyLoss)
+        optimizer: Optimizer
+        device: Device to train on
+        scheduler: Optional learning rate scheduler
+        use_contrastive: Enable cross-modal contrastive learning (default: True)
+        contrastive_weight: Weight for contrastive loss (default: 0.5)
+    
+    Returns:
+        running_loss, pred_correct, pred_all, accuracy, avg_train_time
+    """
     pred_correct, pred_all = 0, 0
     running_loss = 0.0
     train_time_sec_list = []
+    
+    # Initialize contrastive loss (enabled by default)
+    if use_contrastive:
+        contrastive_criterion = CrossModalContrastiveLoss(
+            temperature=0.07,
+            projection_dim=128,
+            d_lhand=42,
+            d_rhand=42,
+            d_body=24
+        ).to(device)
+        print(f"Cross-Modal Contrastive Learning ENABLED (weight={contrastive_weight})")
+    
     for i, data in enumerate(dataloader):
         l_hands, r_hands, bodies, labels = data
         l_hands = l_hands.to(device)
@@ -22,13 +52,35 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
         optimizer.zero_grad()
         start_time = time.time()
 
-        outputs = model(l_hands, r_hands, bodies, training=True)
+        # Forward pass with feature extraction for contrastive learning
+        if use_contrastive:
+            outputs, lh_feat, rh_feat, body_feat = model(
+                l_hands, r_hands, bodies, training=True, return_features=True
+            )
+        else:
+            outputs = model(l_hands, r_hands, bodies, training=True)
 
         end_time = time.time()
         train_time_sec = end_time - start_time
         train_time_sec_list.append(train_time_sec)
 
-        loss = criterion(outputs, labels.squeeze(1))
+        # Compute classification loss
+        ce_loss = criterion(outputs, labels.squeeze(1))
+        
+        # Compute contrastive loss if enabled
+        if use_contrastive:
+            contrastive_loss = contrastive_criterion(
+                lh_feat, rh_feat, body_feat, labels.squeeze(1)
+            )
+            # Combined loss
+            loss = ce_loss + contrastive_weight * contrastive_loss
+            
+            # Log both losses occasionally
+            if i % 50 == 0 and i > 0:
+                print(f"  Batch {i}: CE Loss={ce_loss.item():.4f}, Contrastive Loss={contrastive_loss.item():.4f}")
+        else:
+            loss = ce_loss
+        
         loss.backward()
         optimizer.step()
         running_loss += loss
