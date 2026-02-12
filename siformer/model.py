@@ -235,7 +235,7 @@ class SpoTer(nn.Module):
 
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
-                 seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
+                 seq_len=120, device=None, IA_encoder = True, IA_decoder = False,
                  use_cross_attention=False, cross_attn_heads=4):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")

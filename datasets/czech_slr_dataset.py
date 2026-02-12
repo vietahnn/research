@@ -14,23 +14,35 @@ from normalization.hand_normalization import normalize_single_dict as normalize_
 
 def detect_key_frames(depth_map_dict: dict, target_frames: int = 120, min_motion_threshold: float = 0.001):
     """
-    Detect key frames based on motion magnitude.
+    Detect key frames based on motion magnitude and ensure output has EXACTLY target_frames.
     
     Args:
         depth_map_dict: Dictionary containing landmark positions over time
-        target_frames: Target number of frames to keep (default: 120, reduced from ~204)
+        target_frames: Target number of frames (MUST be exact, default: 120)
         min_motion_threshold: Minimum motion to consider a frame as important
     
     Returns:
-        List of selected frame indices
+        List of selected frame indices with EXACTLY target_frames elements
     """
     # Get sequence length from any landmark
     sequence_len = len(next(iter(depth_map_dict.values()), None))
     
-    # If sequence is already short, keep all frames
-    if sequence_len <= target_frames:
+    # Case 1: Sequence is shorter than target - need to upsample/repeat frames
+    if sequence_len < target_frames:
+        # Use linear interpolation indices
+        indices = np.linspace(0, sequence_len - 1, target_frames)
+        # Round to nearest integer and ensure uniqueness while maintaining order
+        selected_indices = []
+        for idx in indices:
+            rounded_idx = int(np.round(idx))
+            selected_indices.append(rounded_idx)
+        return selected_indices
+    
+    # Case 2: Sequence is exactly target length
+    if sequence_len == target_frames:
         return list(range(sequence_len))
     
+    # Case 3: Sequence is longer than target - need to downsample based on motion
     # Calculate motion magnitude for each frame
     motion_magnitudes = np.zeros(sequence_len - 1)
     
@@ -49,7 +61,8 @@ def detect_key_frames(depth_map_dict: dict, target_frames: int = 120, min_motion
     selected_indices = [0, sequence_len - 1]
     
     # Calculate window size for uniform coverage
-    window_size = max(1, (sequence_len - 2) // (target_frames - 2))
+    num_middle_frames = target_frames - 2
+    window_size = max(1, (sequence_len - 2) // num_middle_frames)
     
     # Select key frames from each window based on motion magnitude
     for window_start in range(1, sequence_len - 1, window_size):
@@ -61,15 +74,13 @@ def detect_key_frames(depth_map_dict: dict, target_frames: int = 120, min_motion
         if len(window_motions) > 0:
             max_motion_idx = window_start + np.argmax(window_motions)
             
-            # Only add if motion is significant or we need more frames
-            if motion_magnitudes[max_motion_idx] > min_motion_threshold or len(selected_indices) < target_frames:
-                if max_motion_idx not in selected_indices:
-                    selected_indices.append(max_motion_idx)
+            if max_motion_idx not in selected_indices:
+                selected_indices.append(max_motion_idx)
     
     # Sort indices
-    selected_indices = sorted(selected_indices)
+    selected_indices = sorted(set(selected_indices))
     
-    # If we have too many, keep the ones with highest motion
+    # Adjust to exactly target_frames
     if len(selected_indices) > target_frames:
         # Keep first and last
         first_last = [selected_indices[0], selected_indices[-1]]
@@ -84,24 +95,47 @@ def detect_key_frames(depth_map_dict: dict, target_frames: int = 120, min_motion
         top_middle = sorted([idx for idx, _ in middle_with_motion[:target_frames-2]])
         selected_indices = [first_last[0]] + top_middle + [first_last[1]]
     
+    elif len(selected_indices) < target_frames:
+        # Need to add more frames - add frames with highest motion that aren't selected
+        frames_needed = target_frames - len(selected_indices)
+        
+        # Create list of all frames with their motion scores
+        all_frames_with_motion = []
+        for idx in range(1, sequence_len - 1):
+            if idx not in selected_indices:
+                motion_score = motion_magnitudes[min(idx, len(motion_magnitudes)-1)]
+                all_frames_with_motion.append((idx, motion_score))
+        
+        # Sort by motion and take top frames_needed
+        all_frames_with_motion.sort(key=lambda x: x[1], reverse=True)
+        additional_frames = [idx for idx, _ in all_frames_with_motion[:frames_needed]]
+        
+        selected_indices.extend(additional_frames)
+        selected_indices = sorted(selected_indices)
+    
+    # Final check and guarantee exactly target_frames
+    assert len(selected_indices) == target_frames, f"Expected {target_frames} frames but got {len(selected_indices)}"
+    
     return selected_indices
 
 
 def apply_frame_sampling(depth_map_dict: dict, selected_indices: list) -> dict:
     """
     Apply frame sampling to the depth map dictionary.
+    Handles both downsampling and upsampling (frame repetition).
     
     Args:
         depth_map_dict: Dictionary containing landmark positions
-        selected_indices: List of frame indices to keep
+        selected_indices: List of frame indices to keep (may contain repeated indices for upsampling)
     
     Returns:
-        Dictionary with only selected frames
+        Dictionary with exactly len(selected_indices) frames
     """
     sampled_dict = {}
     
     for identifier, positions in depth_map_dict.items():
-        sampled_dict[identifier] = [positions[idx] for idx in selected_indices]
+        # Allow repeated indices for upsampling short sequences
+        sampled_dict[identifier] = [positions[min(idx, len(positions)-1)] for idx in selected_indices]
     
     return sampled_dict
 
