@@ -97,6 +97,10 @@ def get_default_args():
     parser.add_argument("--cross_attn_heads", type=int, default=3,
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
 
+    # Bi-LSTM Fusion settings
+    parser.add_argument("--use_bilstm_fusion", type=bool, default=True,
+                        help="Determines whether to use Bi-LSTM fusion before the encoder")
+
     return parser
 
 

@@ -29,7 +29,8 @@ class FeatureIsolatedTransformer(nn.Transformer):
                  inner_classifiers_config: list = None, patience: int = 1, use_pyramid_encoder: bool = False,
                  distil: bool = False, projections_config: list = None,
                  IA_encoder: bool = False, IA_decoder: bool = False, device=None,
-                 use_cross_attention: bool = False, cross_attn_heads: int = 4):
+                 use_cross_attention: bool = False, cross_attn_heads: int = 4,
+                 use_bilstm_fusion: bool = False):
 
         super(FeatureIsolatedTransformer, self).__init__(sum(d_model_list), nhead_list[-1], num_encoder_layers,
                                                          num_decoder_layers, dim_feedforward, dropout, activation)
@@ -51,6 +52,14 @@ class FeatureIsolatedTransformer(nn.Transformer):
         self.selected_attn = selected_attn
         self.output_attention = output_attention
         self.use_cross_attention = use_cross_attention
+        self.use_bilstm_fusion = use_bilstm_fusion
+
+        if self.use_bilstm_fusion:
+            print("Initializing Bi-LSTM Fusion layers.")
+            self.l_hand_lstm = nn.LSTM(d_model_list[0], d_model_list[0] // 2, num_layers=1, bidirectional=True, batch_first=False)
+            self.r_hand_lstm = nn.LSTM(d_model_list[1], d_model_list[1] // 2, num_layers=1, bidirectional=True, batch_first=False)
+            self.body_lstm = nn.LSTM(d_model_list[2], d_model_list[2] // 2, num_layers=1, bidirectional=True, batch_first=False)
+
         self.l_hand_encoder = self.get_custom_encoder(d_model_list[0], nhead_list[0])
         self.r_hand_encoder = self.get_custom_encoder(d_model_list[1], nhead_list[1])
         self.body_encoder = self.get_custom_encoder(d_model_list[2], nhead_list[2])
@@ -150,22 +159,32 @@ class FeatureIsolatedTransformer(nn.Transformer):
     def forward(self, src: list, tgt: Tensor, src_mask: Optional[Tensor] = None, tgt_mask: Optional[Tensor] = None,
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
-                src_is_causal: Optional[bool] = None, tgt_is_causal: Optional[bool] = None,
-                memory_is_causal: bool = False, training: bool = True) -> Tensor:
+                training: bool = True):
 
-        full_src = torch.cat(src, dim=-1)
-        self.checker(full_src, tgt, full_src.dim() == 3)
+        is_batched = src[0].dim() == 3
+        if not self.batch_first and src[0].size(1) != tgt.size(1) and is_batched:
+            raise RuntimeError("the batch number of src and tgt must be equal")
+        elif self.batch_first and src[0].size(0) != tgt.size(0) and is_batched:
+            raise RuntimeError("the batch number of src and tgt must be equal")
 
-        id = uuid.uuid1()
-        # code for concurrency is removed...
+        l_hand_src, r_hand_src, body_src = src
+
+        if self.use_bilstm_fusion:
+            l_hand_src, _ = self.l_hand_lstm(l_hand_src)
+            r_hand_src, _ = self.r_hand_lstm(r_hand_src)
+            body_src, _ = self.body_lstm(body_src)
+
         if self.use_IA_encoder:
-            l_hand_memory = self.l_hand_encoder(src[0], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
-            r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
-            body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
+            l_hand_memory = self.l_hand_encoder(l_hand_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask,
+                                                training=training)
+            r_hand_memory = self.r_hand_encoder(r_hand_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask,
+                                                training=training)
+            body_memory = self.body_encoder(body_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask,
+                                            training=training)
         else:
-            l_hand_memory = self.l_hand_encoder(src[0], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
-            r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
-            body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+            l_hand_memory = self.l_hand_encoder(l_hand_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+            r_hand_memory = self.r_hand_encoder(r_hand_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+            body_memory = self.body_encoder(body_src, mask=src_mask, src_key_padding_mask=src_key_padding_mask)
 
         # Apply cross-modal attention if enabled
         if self.use_cross_attention and self.cross_modal_attn is not None:
