@@ -13,6 +13,7 @@ from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
 from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.hand_gcn import DualHandGraphConvNet
 
 import uuid
 
@@ -236,10 +237,24 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4, use_hand_gcn=True):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
+        self.use_hand_gcn = use_hand_gcn
+        
+        # Hand Graph Convolutional Network for spatial modeling
+        if self.use_hand_gcn:
+            print("Using Hand Graph Convolutional Network for joint modeling")
+            self.hand_gcn = DualHandGraphConvNet(
+                in_features=2,
+                hidden_features=64,
+                num_layers=2,
+                dropout=0.1,
+                shared_weights=True,
+                learnable_graph=False
+            )
+        
         self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=24))
@@ -268,6 +283,10 @@ class SiFormer(nn.Module):
         new_l_hand = new_l_hand.permute(1, 0, 2).type(dtype=torch.float32)
         new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
         new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
+
+        # Apply Hand GCN for spatial joint modeling
+        if self.use_hand_gcn:
+            new_l_hand, new_r_hand = self.hand_gcn(new_l_hand, new_r_hand)
 
         # feature_map = self.feature_extractor(new_inputs)
         # transformer_in = feature_map + self.pos_embedding
