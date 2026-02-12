@@ -38,6 +38,7 @@ class EncoderLayer(nn.Module):
         super(EncoderLayer, self).__init__()
         d_ff = d_ff or 4*d_model
         self.attention = attention
+        self.d_model = d_model  # Store for PBEEncoder access
         
         # Multi-Scale Temporal Module (Enabled by default)
         self.use_multi_scale = use_multi_scale
