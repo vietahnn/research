@@ -255,7 +255,7 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4, use_bilstm_fusion=True):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
@@ -269,7 +269,8 @@ class SiFormer(nn.Module):
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
             inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
             patience=patience, use_pyramid_encoder=False, distil=False,
-            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads
+            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads,
+            use_bilstm_fusion=use_bilstm_fusion
         )
         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}")
         self.projection = nn.Linear(num_hid, num_classes)
