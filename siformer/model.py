@@ -111,6 +111,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
                 Attn(output_attention=self.output_attention),
                 f_d_model, nhead, mix=False
             )
+            encoder_layer.d_model = f_d_model  # Store d_model for PBEEncoder access
             encoder_norm = LayerNorm(f_d_model)
 
             if self.use_IA_encoder:
