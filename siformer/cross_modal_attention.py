@@ -212,6 +212,180 @@ class CrossModalAttentionFusion(nn.Module):
         return lh_out, rh_out, body_out
 
 
+class UniDirectionalCrossModalAttention(nn.Module):
+    """
+    Uni-directional cross-modal attention module - more efficient than bi-directional.
+    
+    Supports multiple attention strategies:
+    - 'hands_to_body': Hands learn from body context (body provides global context to hands)
+    - 'body_to_hands': Body learns from hand details (hands provide gesture details to body)
+    - 'hands_bidirectional': Only left-right hand interaction (no body involvement)
+    
+    This reduces parameters and computation by ~50% compared to bi-directional attention.
+    """
+    
+    def __init__(self, d_lhand, d_rhand, d_body, num_heads=2, dropout=0.1, direction='body_to_hands'):
+        """
+        Args:
+            d_lhand (int): Left hand feature dimension
+            d_rhand (int): Right hand feature dimension
+            d_body (int): Body feature dimension
+            num_heads (int): Number of attention heads
+            dropout (float): Dropout probability
+            direction (str): Attention direction - 'hands_to_body', 'body_to_hands', or 'hands_bidirectional'
+        """
+        super(UniDirectionalCrossModalAttention, self).__init__()
+        
+        # Auto-adjust num_heads for divisibility
+        original_num_heads = num_heads
+        while num_heads > 0:
+            if d_lhand % num_heads == 0 and d_rhand % num_heads == 0 and d_body % num_heads == 0:
+                break
+            num_heads -= 1
+        
+        if num_heads == 0:
+            num_heads = 1
+            
+        if num_heads != original_num_heads:
+            print(f"Warning: Adjusted cross-attention heads from {original_num_heads} to {num_heads}")
+        
+        self.direction = direction
+        self.d_lhand = d_lhand
+        self.d_rhand = d_rhand
+        self.d_body = d_body
+        self.num_heads = num_heads
+        
+        print(f"Initializing Uni-directional Cross-Modal Attention: {direction} with {num_heads} heads")
+        
+        if direction == 'hands_to_body':
+            # Hands attend to body (body provides context to hands)
+            self.lh_attn = nn.MultiheadAttention(d_lhand, num_heads, dropout=dropout, batch_first=True)
+            self.rh_attn = nn.MultiheadAttention(d_rhand, num_heads, dropout=dropout, batch_first=True)
+            
+            self.body_to_lh_proj = nn.Linear(d_body, d_lhand)
+            self.body_to_rh_proj = nn.Linear(d_body, d_rhand)
+            
+            self.lh_gate = nn.Sequential(nn.Linear(d_lhand * 2, d_lhand), nn.Sigmoid())
+            self.rh_gate = nn.Sequential(nn.Linear(d_rhand * 2, d_rhand), nn.Sigmoid())
+            
+            self.lh_norm = nn.LayerNorm(d_lhand)
+            self.rh_norm = nn.LayerNorm(d_rhand)
+            
+        elif direction == 'body_to_hands':
+            # Body attends to both hands (learns from hand gestures)
+            self.body_from_lh_attn = nn.MultiheadAttention(d_body, num_heads, dropout=dropout, batch_first=True)
+            self.body_from_rh_attn = nn.MultiheadAttention(d_body, num_heads, dropout=dropout, batch_first=True)
+            
+            self.lh_to_body_proj = nn.Linear(d_lhand, d_body)
+            self.rh_to_body_proj = nn.Linear(d_rhand, d_body)
+            
+            self.body_gate = nn.Sequential(nn.Linear(d_body * 3, d_body), nn.Sigmoid())
+            self.body_norm = nn.LayerNorm(d_body)
+            
+        elif direction == 'hands_bidirectional':
+            # Only hand-to-hand interaction
+            self.lh_to_rh_attn = nn.MultiheadAttention(d_lhand, num_heads, dropout=dropout, batch_first=True)
+            self.rh_to_lh_attn = nn.MultiheadAttention(d_rhand, num_heads, dropout=dropout, batch_first=True)
+            
+            self.rh_to_lh_proj = nn.Linear(d_rhand, d_lhand)
+            self.lh_to_rh_proj = nn.Linear(d_lhand, d_rhand)
+            
+            self.lh_gate = nn.Sequential(nn.Linear(d_lhand * 2, d_lhand), nn.Sigmoid())
+            self.rh_gate = nn.Sequential(nn.Linear(d_rhand * 2, d_rhand), nn.Sigmoid())
+            
+            self.lh_norm = nn.LayerNorm(d_lhand)
+            self.rh_norm = nn.LayerNorm(d_rhand)
+        else:
+            raise ValueError(f"Unknown direction: {direction}")
+        
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, lh_feat, rh_feat, body_feat):
+        """
+        Forward pass with uni-directional attention.
+        
+        Args:
+            lh_feat: Left hand features [Length, Batch, d_lhand] or [Batch, Length, d_lhand]
+            rh_feat: Right hand features [Length, Batch, d_rhand] or [Batch, Length, d_rhand]
+            body_feat: Body features [Length, Batch, d_body] or [Batch, Length, d_body]
+            
+        Returns:
+            Tuple of (lh_out, rh_out, body_out)
+        """
+        # Handle both [L, B, D] and [B, L, D] formats
+        if lh_feat.dim() == 3 and lh_feat.size(1) < lh_feat.size(0):
+            lh_feat = lh_feat.transpose(0, 1)
+            rh_feat = rh_feat.transpose(0, 1)
+            body_feat = body_feat.transpose(0, 1)
+            needs_transpose_back = True
+        else:
+            needs_transpose_back = False
+        
+        if self.direction == 'hands_to_body':
+            # Hands attend to body
+            body_proj_l = self.body_to_lh_proj(body_feat)
+            body_proj_r = self.body_to_rh_proj(body_feat)
+            
+            lh_from_body, _ = self.lh_attn(lh_feat, body_proj_l, body_proj_l)
+            rh_from_body, _ = self.rh_attn(rh_feat, body_proj_r, body_proj_r)
+            
+            lh_from_body = self.dropout(lh_from_body)
+            rh_from_body = self.dropout(rh_from_body)
+            
+            # Gated fusion
+            lh_gate_weights = self.lh_gate(torch.cat([lh_feat, lh_from_body], dim=-1))
+            rh_gate_weights = self.rh_gate(torch.cat([rh_feat, rh_from_body], dim=-1))
+            
+            lh_out = self.lh_norm(lh_feat + lh_gate_weights * lh_from_body)
+            rh_out = self.rh_norm(rh_feat + rh_gate_weights * rh_from_body)
+            body_out = body_feat
+            
+        elif self.direction == 'body_to_hands':
+            # Body attends to both hands
+            lh_proj = self.lh_to_body_proj(lh_feat)
+            rh_proj = self.rh_to_body_proj(rh_feat)
+            
+            body_from_lh, _ = self.body_from_lh_attn(body_feat, lh_proj, lh_proj)
+            body_from_rh, _ = self.body_from_rh_attn(body_feat, rh_proj, rh_proj)
+            
+            body_from_lh = self.dropout(body_from_lh)
+            body_from_rh = self.dropout(body_from_rh)
+            
+            # Gated fusion
+            body_gate_weights = self.body_gate(torch.cat([body_feat, body_from_lh, body_from_rh], dim=-1))
+            body_out = self.body_norm(body_feat + body_gate_weights * (body_from_lh + body_from_rh))
+            
+            lh_out = lh_feat
+            rh_out = rh_feat
+            
+        elif self.direction == 'hands_bidirectional':
+            # Hand-to-hand interaction only
+            rh_proj = self.rh_to_lh_proj(rh_feat)
+            lh_proj = self.lh_to_rh_proj(lh_feat)
+            
+            lh_from_rh, _ = self.lh_to_rh_attn(lh_feat, rh_proj, rh_proj)
+            rh_from_lh, _ = self.rh_to_lh_attn(rh_feat, lh_proj, lh_proj)
+            
+            lh_from_rh = self.dropout(lh_from_rh)
+            rh_from_lh = self.dropout(rh_from_lh)
+            
+            # Gated fusion
+            lh_gate_weights = self.lh_gate(torch.cat([lh_feat, lh_from_rh], dim=-1))
+            rh_gate_weights = self.rh_gate(torch.cat([rh_feat, rh_from_lh], dim=-1))
+            
+            lh_out = self.lh_norm(lh_feat + lh_gate_weights * lh_from_rh)
+            rh_out = self.rh_norm(rh_feat + rh_gate_weights * rh_from_lh)
+            body_out = body_feat
+        
+        # Transpose back if needed
+        if needs_transpose_back:
+            lh_out = lh_out.transpose(0, 1)
+            rh_out = rh_out.transpose(0, 1)
+            body_out = body_out.transpose(0, 1)
+        
+        return lh_out, rh_out, body_out
+
+
 class SimplifiedCrossModalAttention(nn.Module):
     """
     A simplified version of cross-modal attention for ablation studies.
