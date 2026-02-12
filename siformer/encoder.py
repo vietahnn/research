@@ -3,6 +3,7 @@ from torch import nn, Tensor
 import torch.nn.functional as F
 
 from typing import Optional, Union, Callable
+from siformer.multi_scale_temporal import MultiScaleTemporalModule
 
 
 class ConvLayer(nn.Module):
@@ -33,10 +34,21 @@ class ConvLayer(nn.Module):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, attention, d_model, d_ff=None, dropout=0.1, activation="relu"):
+    def __init__(self, attention, d_model, d_ff=None, dropout=0.1, activation="relu", use_multi_scale=True):
         super(EncoderLayer, self).__init__()
         d_ff = d_ff or 4*d_model
         self.attention = attention
+        
+        # Multi-Scale Temporal Module (Enabled by default)
+        self.use_multi_scale = use_multi_scale
+        if use_multi_scale:
+            self.multi_scale = MultiScaleTemporalModule(
+                d_model=d_model,
+                scales=[1, 3, 5, 7],  # Fast, short, medium, long-term patterns
+                dropout=dropout
+            )
+            self.norm_multi_scale = nn.LayerNorm(d_model)
+        
         self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=d_ff, kernel_size=1)
         self.conv2 = nn.Conv1d(in_channels=d_ff, out_channels=d_model, kernel_size=1)
         self.norm1 = nn.LayerNorm(d_model)
@@ -47,13 +59,21 @@ class EncoderLayer(nn.Module):
     def forward(self, x, attn_mask=None):
         # x: [L, B, D/F]
 
+        # Self-attention
         new_x = self.attention(
             x, x, x,
             attn_mask=attn_mask
         )
         x = x + self.dropout(new_x)
-
-        y = x = self.norm1(x)
+        x = self.norm1(x)
+        
+        # Multi-Scale Temporal Modeling (captures varying signing speeds)
+        if self.use_multi_scale:
+            multi_scale_x = self.multi_scale(x)
+            x = self.norm_multi_scale(multi_scale_x)
+        
+        # Feed-forward network
+        y = x
         y = self.dropout(self.activation(self.conv1(y.transpose(-1,1))))
         y = self.dropout(self.conv2(y).transpose(-1,1))
 
@@ -89,7 +109,7 @@ class PBEEncoder(nn.TransformerEncoder):
     __constants__ = ['norm']
 
     def __init__(self, encoder_layer, num_layers, norm=None, enable_nested_tensor=False,
-                 patience=1, inner_classifiers_config=None, projections_config=None):
+                 patience=1, inner_classifiers_config=None, projections_config=None, use_multi_scale=True):
         super(PBEEncoder, self).__init__(encoder_layer, num_layers, norm, enable_nested_tensor)
         self.patience = patience
         self.inner_classifiers = nn.ModuleList(
@@ -100,6 +120,30 @@ class PBEEncoder(nn.TransformerEncoder):
             [nn.Linear(projections_config[0], projections_config[1])
              for _ in range(num_layers)]
         )
+        
+        # Multi-Scale Temporal Modules (Enabled by default)
+        self.use_multi_scale = use_multi_scale
+        if use_multi_scale:
+            # Get d_model from encoder_layer
+            if hasattr(encoder_layer, 'd_model'):
+                d_model = encoder_layer.d_model
+            elif hasattr(encoder_layer, 'self_attn'):
+                d_model = encoder_layer.self_attn.embed_dim
+            else:
+                # Fallback: assume standard transformer dimensions
+                d_model = inner_classifiers_config[0] if inner_classifiers_config else 108
+            
+            self.multi_scale_modules = nn.ModuleList([
+                MultiScaleTemporalModule(
+                    d_model=d_model,
+                    scales=[1, 3, 5, 7],
+                    dropout=0.1
+                ) for _ in range(num_layers)
+            ])
+            self.multi_scale_norms = nn.ModuleList([
+                nn.LayerNorm(d_model) for _ in range(num_layers)
+            ])
+            print(f"PBEEncoder: Multi-Scale Temporal enabled for {num_layers} layers with d_model={d_model}")
 
     def forward(self, src: Tensor, mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 training: bool = True):
@@ -139,6 +183,12 @@ class PBEEncoder(nn.TransformerEncoder):
                     output = mod(output, src_mask=mask)
                 else:
                     output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask)  # [L, B, F/D]
+                
+                # Apply Multi-Scale Temporal Modeling
+                if self.use_multi_scale:
+                    output = self.multi_scale_modules[i](output)
+                    output = self.multi_scale_norms[i](output)
+                
                 # mod_output = output
                 # classifier_out = self.inner_classifiers[i](mod_output).squeeze().unsqueeze(0)  # [B, L, C]
                 # _ = self.projections[i](classifier_out.permute(0, 2, 1)).squeeze(-1)  # [1, 100]
@@ -152,6 +202,12 @@ class PBEEncoder(nn.TransformerEncoder):
                     output = mod(output, src_mask=mask)
                 else:
                     output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+                
+                # Apply Multi-Scale Temporal Modeling
+                if self.use_multi_scale:
+                    output = self.multi_scale_modules[i](output)
+                    output = self.multi_scale_norms[i](output)
+                
                 mod_output = output
                 if self.norm is not None:
                     mod_output = self.norm(mod_output)  # [L, B, D/F]
