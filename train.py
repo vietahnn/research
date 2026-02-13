@@ -18,6 +18,7 @@ from datasets.czech_slr_dataset import CzechSLRDataset
 from siformer.model import SiFormer, SpoTer
 from siformer.utils import train_epoch, evaluate, evaluate_top_k
 from siformer.gaussian_noise import GaussianNoise
+from siformer.cmcl_loss import CrossModalConsistencyLoss, AdaptiveCMCL
 
 import time
 import datetime
@@ -93,9 +94,24 @@ def get_default_args():
     
     # Cross-Modal Attention settings
     parser.add_argument("--use_cross_attention", type=bool, default=True, 
-                        help="Determines whether to use bi-directional cross-modal attention between body parts")
+                        help="Determines whether to use cross-modal attention between body parts")
     parser.add_argument("--cross_attn_heads", type=int, default=3,
-                        help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
+                        help="Number of attention heads for cross-modal attention (default: 2, must divide 42 and 24)")
+    parser.add_argument("--cross_attn_direction", type=str, default='three_pairs',
+                        choices=['body_to_hands', 'hands_to_body', 'hands_bidirectional', 'bidirectional'],
+                        help="Direction of cross-modal attention")
+    
+    # CMCL Loss settings
+    parser.add_argument("--use_cmcl", type=bool, default=True,
+                        help="Use Cross-Modal Consistency Loss instead of standard cross-entropy")
+    parser.add_argument("--lambda_consistency", type=float, default=0.1,
+                        help="Weight for consistency loss component in CMCL (default: 0.1)")
+    parser.add_argument("--lambda_alignment", type=float, default=0.05,
+                        help="Weight for alignment loss component in CMCL (default: 0.05)")
+    parser.add_argument("--cmcl_temperature", type=float, default=1.0,
+                        help="Temperature for softening attention distributions in CMCL (default: 1.0)")
+    parser.add_argument("--use_adaptive_cmcl", type=bool, default=False,
+                        help="Use adaptive CMCL with dynamic weight adjustment")
 
     return parser
 
@@ -142,8 +158,28 @@ def train(args):
     slr_model.train(True)
     slr_model.to(device)
 
-    # Construct the other modules
-    cel_criterion = nn.CrossEntropyLoss()
+    # Construct the loss criterion
+    if args.use_cmcl:
+        if args.use_adaptive_cmcl:
+            print(f"Using Adaptive CMCL (λ_cons={args.lambda_consistency}, λ_align={args.lambda_alignment}, temp={args.cmcl_temperature})")
+            cel_criterion = AdaptiveCMCL(
+                num_classes=args.num_classes,
+                lambda_consistency=args.lambda_consistency,
+                lambda_alignment=args.lambda_alignment,
+                temperature=args.cmcl_temperature
+            )
+        else:
+            print(f"Using CMCL (λ_cons={args.lambda_consistency}, λ_align={args.lambda_alignment}, temp={args.cmcl_temperature})")
+            cel_criterion = CrossModalConsistencyLoss(
+                num_classes=args.num_classes,
+                lambda_consistency=args.lambda_consistency,
+                lambda_alignment=args.lambda_alignment,
+                temperature=args.cmcl_temperature
+            )
+    else:
+        print("Using standard Cross-Entropy Loss")
+        cel_criterion = nn.CrossEntropyLoss()
+    
     optimizer = torch.optim.AdamW(slr_model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=1e-8)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 80], gamma=0.1)  # 40, 60, 80
 
@@ -217,8 +253,15 @@ def train(args):
     avg_train_time_sec_list = []
     for epoch in range(args.epochs):
         start_time = time.time()
-        train_loss, _, _, train_acc, avg_train_time = train_epoch(slr_model, train_loader, cel_criterion, optimizer,
-                                                                  device, scheduler=scheduler)
+        
+        # Update epoch for adaptive CMCL
+        if args.use_cmcl and args.use_adaptive_cmcl:
+            cel_criterion.update_epoch(epoch)
+        
+        train_loss, _, _, train_acc, avg_train_time = train_epoch(
+            slr_model, train_loader, cel_criterion, optimizer,
+            device, scheduler=scheduler, use_cmcl=args.use_cmcl
+        )
         end_time = time.time()
         train_time = end_time - start_time
 

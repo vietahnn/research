@@ -123,7 +123,7 @@ class CrossModalAttentionFusion(nn.Module):
         # Dropout for regularization
         self.dropout = nn.Dropout(dropout)
         
-    def forward(self, lh_feat, rh_feat, body_feat):
+    def forward(self, lh_feat, rh_feat, body_feat, return_attention=False):
         """
         Forward pass of cross-modal attention fusion.
         
@@ -131,9 +131,11 @@ class CrossModalAttentionFusion(nn.Module):
             lh_feat: Left hand features [Batch, Length, d_lhand] or [Length, Batch, d_lhand]
             rh_feat: Right hand features [Batch, Length, d_rhand] or [Length, Batch, d_rhand]
             body_feat: Body features [Batch, Length, d_body] or [Length, Batch, d_body]
+            return_attention: If True, return attention weights for CMCL loss
             
         Returns:
-            Tuple of (lh_out, rh_out, body_out) with enhanced cross-modal features
+            If return_attention=False: Tuple of (lh_out, rh_out, body_out)
+            If return_attention=True: Tuple of (lh_out, rh_out, body_out, attention_weights)
         """
         # Handle both batch_first=True and batch_first=False
         # Assuming input is [Length, Batch, Dim], convert to [Batch, Length, Dim]
@@ -152,7 +154,7 @@ class CrossModalAttentionFusion(nn.Module):
         body_proj = self.body_to_lh_proj(body_feat)  # [B, L, d_lhand]
         
         # Left hand attends to right hand
-        lh_from_rh, _ = self.lh2rh_attn(lh_feat, rh_proj, rh_proj)
+        lh_from_rh, attn_lh2rh = self.lh2rh_attn(lh_feat, rh_proj, rh_proj)
         lh_from_rh = self.dropout(lh_from_rh)
         
         # Left hand attends to body
@@ -171,7 +173,7 @@ class CrossModalAttentionFusion(nn.Module):
         body_proj_r = self.body_to_rh_proj(body_feat)  # [B, L, d_rhand]
         
         # Right hand attends to left hand
-        rh_from_lh, _ = self.rh2lh_attn(rh_feat, lh_proj, lh_proj)
+        rh_from_lh, attn_rh2lh = self.rh2lh_attn(rh_feat, lh_proj, lh_proj)
         rh_from_lh = self.dropout(rh_from_lh)
         
         # Right hand attends to body
@@ -208,6 +210,13 @@ class CrossModalAttentionFusion(nn.Module):
             lh_out = lh_out.transpose(0, 1)
             rh_out = rh_out.transpose(0, 1)
             body_out = body_out.transpose(0, 1)
+        
+        if return_attention:
+            attention_weights = {
+                'attn_lh2rh': attn_lh2rh,
+                'attn_rh2lh': attn_rh2lh
+            }
+            return lh_out, rh_out, body_out, attention_weights
         
         return lh_out, rh_out, body_out
 

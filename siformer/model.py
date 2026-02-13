@@ -151,7 +151,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
                 src_is_causal: Optional[bool] = None, tgt_is_causal: Optional[bool] = None,
-                memory_is_causal: bool = False, training: bool = True) -> Tensor:
+                memory_is_causal: bool = False, training: bool = True, return_features: bool = False) -> Tensor:
 
         full_src = torch.cat(src, dim=-1)
         self.checker(full_src, tgt, full_src.dim() == 3)
@@ -168,10 +168,16 @@ class FeatureIsolatedTransformer(nn.Transformer):
             body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
 
         # Apply cross-modal attention if enabled
+        attention_weights = None
         if self.use_cross_attention and self.cross_modal_attn is not None:
-            l_hand_memory, r_hand_memory, body_memory = self.cross_modal_attn(
-                l_hand_memory, r_hand_memory, body_memory
-            )
+            if return_features:
+                l_hand_memory, r_hand_memory, body_memory, attention_weights = self.cross_modal_attn(
+                    l_hand_memory, r_hand_memory, body_memory, return_attention=True
+                )
+            else:
+                l_hand_memory, r_hand_memory, body_memory = self.cross_modal_attn(
+                    l_hand_memory, r_hand_memory, body_memory, return_attention=False
+                )
 
         full_memory = torch.cat((l_hand_memory, r_hand_memory, body_memory), -1)
 
@@ -184,6 +190,16 @@ class FeatureIsolatedTransformer(nn.Transformer):
                                   tgt_key_padding_mask=tgt_key_padding_mask,
                                   memory_key_padding_mask=memory_key_padding_mask)
 
+        if return_features:
+            features = {
+                'lh_feat': l_hand_memory,
+                'rh_feat': r_hand_memory,
+                'body_feat': body_memory,
+            }
+            if attention_weights is not None:
+                features.update(attention_weights)
+            return output, features
+        
         return output
 
 
@@ -255,7 +271,7 @@ class SiFormer(nn.Module):
         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}")
         self.projection = nn.Linear(num_hid, num_classes)
 
-    def forward(self, l_hand, r_hand, body, training):
+    def forward(self, l_hand, r_hand, body, training, return_features=False):
         batch_size = l_hand.size(0)
         # (batch_size, seq_len, respected_feature_size, coordinates): (24, 204, 54, 2)
         # -> (batch_size, seq_len, feature_size):  (24, 204, 108)
@@ -276,14 +292,26 @@ class SiFormer(nn.Module):
         body_in = new_body + self.body_embedding  # Shape remains the same
 
         # (seq_len, batch_size, feature_size) -> (batch_size, 1, feature_size): (24, 1, 108)
-        transformer_output = self.transformer(
-            [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
-        ).transpose(0, 1)
+        if return_features:
+            transformer_output, features = self.transformer(
+                [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), 
+                training=training, return_features=True
+            )
+            transformer_output = transformer_output.transpose(0, 1)
+        else:
+            transformer_output = self.transformer(
+                [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), 
+                training=training, return_features=False
+            ).transpose(0, 1)
         # print("transformer_output.shape")
         # print(transformer_output.shape)
 
         # (batch_size, 1, feature_size) -> (batch_size, num_class): (24, 100)
         out = self.projection(transformer_output).squeeze()
+        
+        if return_features:
+            return out, features
+        
         return out
 
     @staticmethod

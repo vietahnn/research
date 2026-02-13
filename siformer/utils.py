@@ -8,7 +8,7 @@ import time
 from statistics import mean
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None):
+def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, use_cmcl=False):
     pred_correct, pred_all = 0, 0
     running_loss = 0.0
     train_time_sec_list = []
@@ -22,13 +22,18 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
         optimizer.zero_grad()
         start_time = time.time()
 
-        outputs = model(l_hands, r_hands, bodies, training=True)
+        # Use CMCL if specified
+        if use_cmcl:
+            outputs, features = model(l_hands, r_hands, bodies, training=True, return_features=True)
+            loss = criterion(outputs, labels.squeeze(1), features=features)
+        else:
+            outputs = model(l_hands, r_hands, bodies, training=True)
+            loss = criterion(outputs, labels.squeeze(1))
 
         end_time = time.time()
         train_time_sec = end_time - start_time
         train_time_sec_list.append(train_time_sec)
 
-        loss = criterion(outputs, labels.squeeze(1))
         loss.backward()
         optimizer.step()
         running_loss += loss
@@ -46,7 +51,6 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
     avg_train_time = mean(train_time_sec_list)
 
     return running_loss, pred_correct, pred_all, (pred_correct / pred_all), avg_train_time
-
 
 def evaluate(model, dataloader, device, print_stats=False):
     pred_correct, pred_all = 0, 0
