@@ -94,7 +94,7 @@ def get_default_args():
     # Cross-Modal Attention settings
     parser.add_argument("--use_cross_attention", type=bool, default=True, 
                         help="Determines whether to use bi-directional cross-modal attention between body parts")
-    parser.add_argument("--cross_attn_heads", type=int, default=2,
+    parser.add_argument("--cross_attn_heads", type=int, default=6,
                         help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
     
     # Multi-Scale Temporal Modeling settings
