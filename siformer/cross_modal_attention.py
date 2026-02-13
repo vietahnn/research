@@ -220,11 +220,13 @@ class UniDirectionalCrossModalAttention(nn.Module):
     - 'hands_to_body': Hands learn from body context (body provides global context to hands)
     - 'body_to_hands': Body learns from hand details (hands provide gesture details to body)
     - 'hands_bidirectional': Only left-right hand interaction (no body involvement)
+    - 'chain': Chain attention - LH→RH→Body→LH (each pair interacts only once)
+    - 'three_pairs': Three independent attentions - LH→Body, RH→Body, RH→LH
     
     This reduces parameters and computation by ~50% compared to bi-directional attention.
     """
     
-    def __init__(self, d_lhand, d_rhand, d_body, num_heads=2, dropout=0.1, direction='body_to_hands'):
+    def __init__(self, d_lhand, d_rhand, d_body, num_heads=2, dropout=0.1, direction='three_pairs'):
         """
         Args:
             d_lhand (int): Left hand feature dimension
@@ -232,7 +234,7 @@ class UniDirectionalCrossModalAttention(nn.Module):
             d_body (int): Body feature dimension
             num_heads (int): Number of attention heads
             dropout (float): Dropout probability
-            direction (str): Attention direction - 'hands_to_body', 'body_to_hands', or 'hands_bidirectional'
+            direction (str): Attention direction - 'hands_to_body', 'body_to_hands', 'hands_bidirectional', 'chain', or 'three_pairs'
         """
         super(UniDirectionalCrossModalAttention, self).__init__()
         
@@ -295,6 +297,53 @@ class UniDirectionalCrossModalAttention(nn.Module):
             
             self.lh_norm = nn.LayerNorm(d_lhand)
             self.rh_norm = nn.LayerNorm(d_rhand)
+            
+        elif direction == 'chain':
+            # Chain attention: LH → RH → Body → LH (each interaction happens only once)
+            # Left hand receives from body
+            self.lh_attn = nn.MultiheadAttention(d_lhand, num_heads, dropout=dropout, batch_first=True)
+            # Right hand receives from left hand
+            self.rh_attn = nn.MultiheadAttention(d_rhand, num_heads, dropout=dropout, batch_first=True)
+            # Body receives from right hand
+            self.body_attn = nn.MultiheadAttention(d_body, num_heads, dropout=dropout, batch_first=True)
+            
+            # Projection layers
+            self.body_to_lh_proj = nn.Linear(d_body, d_lhand)  # For body → lh
+            self.lh_to_rh_proj = nn.Linear(d_lhand, d_rhand)    # For lh → rh
+            self.rh_to_body_proj = nn.Linear(d_rhand, d_body)  # For rh → body
+            
+            # Gating mechanisms
+            self.lh_gate = nn.Sequential(nn.Linear(d_lhand * 2, d_lhand), nn.Sigmoid())
+            self.rh_gate = nn.Sequential(nn.Linear(d_rhand * 2, d_rhand), nn.Sigmoid())
+            self.body_gate = nn.Sequential(nn.Linear(d_body * 2, d_body), nn.Sigmoid())
+            
+            # Layer normalization
+            self.lh_norm = nn.LayerNorm(d_lhand)
+            self.rh_norm = nn.LayerNorm(d_rhand)
+            self.body_norm = nn.LayerNorm(d_body)
+            
+        elif direction == 'three_pairs':
+            # Three independent attentions: LH→Body, RH→Body, RH→LH
+            # Attention 1: Left hand attends to body
+            self.lh_attn = nn.MultiheadAttention(d_lhand, num_heads, dropout=dropout, batch_first=True)
+            # Attention 2: Right hand attends to body
+            self.rh_body_attn = nn.MultiheadAttention(d_rhand, num_heads, dropout=dropout, batch_first=True)
+            # Attention 3: Right hand attends to left hand
+            self.rh_lh_attn = nn.MultiheadAttention(d_rhand, num_heads, dropout=dropout, batch_first=True)
+            
+            # Projection layers
+            self.body_to_lh_proj = nn.Linear(d_body, d_lhand)   # For body → lh
+            self.body_to_rh_proj = nn.Linear(d_body, d_rhand)   # For body → rh
+            self.lh_to_rh_proj = nn.Linear(d_lhand, d_rhand)    # For lh → rh
+            
+            # Gating mechanisms (RH receives from 2 sources, so needs special handling)
+            self.lh_gate = nn.Sequential(nn.Linear(d_lhand * 2, d_lhand), nn.Sigmoid())
+            self.rh_gate = nn.Sequential(nn.Linear(d_rhand * 3, d_rhand), nn.Sigmoid())  # RH gets from body + lh
+            
+            # Layer normalization
+            self.lh_norm = nn.LayerNorm(d_lhand)
+            self.rh_norm = nn.LayerNorm(d_rhand)
+            
         else:
             raise ValueError(f"Unknown direction: {direction}")
         
@@ -375,6 +424,64 @@ class UniDirectionalCrossModalAttention(nn.Module):
             
             lh_out = self.lh_norm(lh_feat + lh_gate_weights * lh_from_rh)
             rh_out = self.rh_norm(rh_feat + rh_gate_weights * rh_from_lh)
+            body_out = body_feat
+            
+        elif self.direction == 'chain':
+            # Chain attention: LH → RH → Body → LH
+            # Each modality only receives information from one other modality (truly uni-directional)
+            
+            # Step 1: Body → LH (body provides context to left hand)
+            body_proj = self.body_to_lh_proj(body_feat)
+            lh_from_body, _ = self.lh_attn(lh_feat, body_proj, body_proj)
+            lh_from_body = self.dropout(lh_from_body)
+            
+            # Step 2: LH → RH (left hand provides info to right hand)
+            lh_proj = self.lh_to_rh_proj(lh_feat)
+            rh_from_lh, _ = self.rh_attn(rh_feat, lh_proj, lh_proj)
+            rh_from_lh = self.dropout(rh_from_lh)
+            
+            # Step 3: RH → Body (right hand provides info back to body)
+            rh_proj = self.rh_to_body_proj(rh_feat)
+            body_from_rh, _ = self.body_attn(body_feat, rh_proj, rh_proj)
+            body_from_rh = self.dropout(body_from_rh)
+            
+            # Gated fusion for all three modalities
+            lh_gate_weights = self.lh_gate(torch.cat([lh_feat, lh_from_body], dim=-1))
+            rh_gate_weights = self.rh_gate(torch.cat([rh_feat, rh_from_lh], dim=-1))
+            body_gate_weights = self.body_gate(torch.cat([body_feat, body_from_rh], dim=-1))
+            
+            lh_out = self.lh_norm(lh_feat + lh_gate_weights * lh_from_body)
+            rh_out = self.rh_norm(rh_feat + rh_gate_weights * rh_from_lh)
+            body_out = self.body_norm(body_feat + body_gate_weights * body_from_rh)
+            
+        elif self.direction == 'three_pairs':
+            # Three independent attentions: LH→Body, RH→Body, RH→LH
+            
+            # Attention 1: Left hand attends to body
+            body_proj_lh = self.body_to_lh_proj(body_feat)
+            lh_from_body, _ = self.lh_attn(lh_feat, body_proj_lh, body_proj_lh)
+            lh_from_body = self.dropout(lh_from_body)
+            
+            # Attention 2: Right hand attends to body
+            body_proj_rh = self.body_to_rh_proj(body_feat)
+            rh_from_body, _ = self.rh_body_attn(rh_feat, body_proj_rh, body_proj_rh)
+            rh_from_body = self.dropout(rh_from_body)
+            
+            # Attention 3: Right hand attends to left hand
+            lh_proj = self.lh_to_rh_proj(lh_feat)
+            rh_from_lh, _ = self.rh_lh_attn(rh_feat, lh_proj, lh_proj)
+            rh_from_lh = self.dropout(rh_from_lh)
+            
+            # Gated fusion
+            # Left hand only receives from body
+            lh_gate_weights = self.lh_gate(torch.cat([lh_feat, lh_from_body], dim=-1))
+            lh_out = self.lh_norm(lh_feat + lh_gate_weights * lh_from_body)
+            
+            # Right hand receives from both body and left hand
+            rh_gate_weights = self.rh_gate(torch.cat([rh_feat, rh_from_body, rh_from_lh], dim=-1))
+            rh_out = self.rh_norm(rh_feat + rh_gate_weights * (rh_from_body + rh_from_lh))
+            
+            # Body unchanged
             body_out = body_feat
         
         # Transpose back if needed
