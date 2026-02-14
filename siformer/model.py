@@ -8,7 +8,7 @@ from torch.nn.modules.normalization import LayerNorm
 from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer, TransformerDecoder
 
 from typing import Optional, Union, Callable
-from siformer.attention import AttentionLayer, ProbAttention, FullAttention
+from siformer.attention import AttentionLayer, ProbAttention, FullAttention, SparseAttention
 from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
@@ -86,7 +86,12 @@ class FeatureIsolatedTransformer(nn.Transformer):
         self._reset_parameters()
 
     def get_custom_encoder(self, f_d_model: int, nhead: int):
-        Attn = ProbAttention if self.selected_attn == 'prob' else FullAttention
+        if self.selected_attn == 'prob':
+            Attn = ProbAttention
+        elif self.selected_attn == 'sparse':
+            Attn = SparseAttention
+        else:
+            Attn = FullAttention
         print(f'self.selected_attn {self.selected_attn}')
 
         if self.use_pyramid_encoder:

@@ -83,7 +83,8 @@ def get_default_args():
                         help="Determines whether continuous statistics of training time should be record")
 
     # Model settings
-    parser.add_argument("--attn_type", type=str, default='prob', help="The attention mechanism used by the model")
+    parser.add_argument("--attn_type", type=str, default='sparse', 
+                        help="The attention mechanism used by the model: 'prob' (ProbSparse), 'sparse' (Local Sparse), or 'full' (Full Attention)")
     parser.add_argument("--num_enc_layers", type=int, default=3, help="Determines the number of encoder layers")
     parser.add_argument("--num_dec_layers", type=int, default=2, help="Determines the number of decoder layers")
     parser.add_argument("--FIM", type=bool, default=True, help="Determines whether feature-isolated mechanism will be applied")

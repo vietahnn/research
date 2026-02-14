@@ -61,6 +61,68 @@ class FullAttention(nn.Module):
             return (V.contiguous(), None)
 
 
+class SparseAttention(nn.Module):
+    """
+    Local Sparse Attention - only attends to nearby tokens within a window.
+    This reduces computational complexity and acts as regularization to prevent overfitting.
+    """
+    def __init__(self, mask_flag=True, factor=5, scale=None, attention_dropout=0.1, 
+                 output_attention=False, window_size=None):
+        super(SparseAttention, self).__init__()
+        self.scale = scale
+        self.mask_flag = mask_flag
+        self.output_attention = output_attention
+        self.dropout = nn.Dropout(attention_dropout)
+        # window_size: local attention window (if None, will be set based on sequence length)
+        self.window_size = window_size
+        self.factor = factor  # Keep factor for compatibility, but use it to determine window
+
+    def _create_local_mask(self, L, device, window_size):
+        """Create a mask that only allows attention within local windows"""
+        mask = torch.ones(L, L, dtype=torch.bool, device=device)
+        for i in range(L):
+            start = max(0, i - window_size // 2)
+            end = min(L, i + window_size // 2 + 1)
+            mask[i, start:end] = False
+        return mask
+
+    def forward(self, queries, keys, values, attn_mask):
+        B, L, H, E = queries.shape
+        _, S, _, D = values.shape
+        scale = self.scale or 1. / sqrt(E)
+        
+        # Determine window size: use factor * log(L) for adaptive window
+        if self.window_size is None:
+            window_size = max(self.factor * int(np.ceil(np.log(L))), 8)  # Minimum window of 8
+        else:
+            window_size = self.window_size
+        
+        # Compute full attention scores
+        scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+        
+        # Create local sparse mask
+        local_mask = self._create_local_mask(L, queries.device, window_size)
+        local_mask = local_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, L, L]
+        
+        # Apply local mask (mask out tokens outside the window)
+        scores.masked_fill_(local_mask, -np.inf)
+        
+        # Apply causal mask if needed
+        if self.mask_flag:
+            if attn_mask is None:
+                attn_mask = TriangularCausalMask(B, L, device=queries.device)
+            scores.masked_fill_(attn_mask.mask, -np.inf)
+        
+        # Apply softmax and dropout
+        A = self.dropout(torch.softmax(scale * scores, dim=-1))
+        V = torch.einsum("bhls,bshd->blhd", A, values)
+        
+        if self.output_attention:
+            return (V.contiguous(), A)
+        else:
+            return (V.contiguous(), None)
+
+
 class ProbAttention(nn.Module):
     def __init__(self, mask_flag=False, factor=5, scale=None, attention_dropout=0.1, output_attention=True):
         super(ProbAttention, self).__init__()
