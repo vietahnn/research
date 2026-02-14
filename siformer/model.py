@@ -59,7 +59,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
         
         # Initialize cross-modal attention if enabled
         if self.use_cross_attention:
-            print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
+            print(f"VA Initializing One-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
             self.cross_modal_attn = UniDirectionalCrossModalAttention(
                     d_lhand=d_model_list[0],
                     d_rhand=d_model_list[1],
