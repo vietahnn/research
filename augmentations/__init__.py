@@ -228,6 +228,175 @@ def augment_arm_joint_rotate(sign: dict, probability: float, angle_range: tuple)
     return __wrap_sign_into_row(body_landmarks, hand_landmarks)
 
 
+def augment_temporal_mask(sign: dict, mask_ratio: float = 0.1, mask_consecutive: bool = True) -> dict:
+    """
+    TEMPORAL AUGMENTATION TECHNIQUE. Randomly masks (sets to zero) a portion of frames in the sequence.
+    This simulates temporal occlusion or missing frames.
+    
+    :param sign: Dictionary with sequential skeletal data of the signing person
+    :param mask_ratio: Proportion of frames to mask (default: 0.1 means 10% of frames)
+    :param mask_consecutive: If True, mask consecutive frames; if False, mask random scattered frames
+    
+    :return: Dictionary with temporally masked sequential skeletal data
+    """
+    body_landmarks, hand_landmarks = __preprocess_row_sign(sign)
+    
+    # Get sequence length
+    seq_len = len(next(iter(body_landmarks.values())))
+    num_mask = int(seq_len * mask_ratio)
+    
+    if num_mask == 0:
+        return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+    
+    if mask_consecutive:
+        # Mask consecutive frames
+        start_idx = random.randint(0, seq_len - num_mask)
+        mask_indices = list(range(start_idx, start_idx + num_mask))
+    else:
+        # Mask random scattered frames
+        mask_indices = random.sample(range(seq_len), num_mask)
+    
+    # Apply masking to all landmarks
+    for key in body_landmarks:
+        for idx in mask_indices:
+            body_landmarks[key][idx] = (0.0, 0.0)
+    
+    for key in hand_landmarks:
+        for idx in mask_indices:
+            hand_landmarks[key][idx] = (0.0, 0.0)
+    
+    return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+
+
+def augment_temporal_subsample(sign: dict, subsample_ratio: float = 0.85) -> dict:
+    """
+    TEMPORAL AUGMENTATION TECHNIQUE. Randomly drops frames and interpolates to maintain sequence length.
+    This simulates temporal variations in signing speed.
+    
+    :param sign: Dictionary with sequential skeletal data of the signing person
+    :param subsample_ratio: Ratio of frames to keep (default: 0.85 means keep 85% of frames)
+    
+    :return: Dictionary with temporally subsampled and interpolated sequential skeletal data
+    """
+    body_landmarks, hand_landmarks = __preprocess_row_sign(sign)
+    
+    # Get sequence length
+    seq_len = len(next(iter(body_landmarks.values())))
+    num_keep = int(seq_len * subsample_ratio)
+    
+    if num_keep >= seq_len or num_keep < 2:
+        return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+    
+    # Randomly select frames to keep (always keep first and last)
+    keep_indices = sorted(random.sample(range(1, seq_len - 1), num_keep - 2))
+    keep_indices = [0] + keep_indices + [seq_len - 1]
+    
+    # Interpolate back to original length
+    def interpolate_sequence(values, keep_idx, target_len):
+        kept_values = [values[i] for i in keep_idx]
+        interpolated = []
+        
+        for i in range(target_len):
+            # Find surrounding kept frames
+            ratio = i / (target_len - 1) * (len(kept_values) - 1)
+            idx_low = int(ratio)
+            idx_high = min(idx_low + 1, len(kept_values) - 1)
+            alpha = ratio - idx_low
+            
+            # Linear interpolation
+            x = kept_values[idx_low][0] * (1 - alpha) + kept_values[idx_high][0] * alpha
+            y = kept_values[idx_low][1] * (1 - alpha) + kept_values[idx_high][1] * alpha
+            interpolated.append((x, y))
+        
+        return interpolated
+    
+    # Apply to all landmarks
+    body_landmarks = {key: interpolate_sequence(value, keep_indices, seq_len) 
+                      for key, value in body_landmarks.items()}
+    hand_landmarks = {key: interpolate_sequence(value, keep_indices, seq_len) 
+                      for key, value in hand_landmarks.items()}
+    
+    return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+
+
+def augment_spatial_mask(sign: dict, mask_ratio: float = 0.15, mask_hands_prob: float = 0.3, 
+                          mask_body_prob: float = 0.3) -> dict:
+    """
+    SPATIAL AUGMENTATION TECHNIQUE. Randomly masks (sets to zero) a subset of keypoints.
+    This simulates partial occlusion or detection failures.
+    
+    :param sign: Dictionary with sequential skeletal data of the signing person
+    :param mask_ratio: Proportion of keypoints to mask
+    :param mask_hands_prob: Probability of masking hand keypoints
+    :param mask_body_prob: Probability of masking body keypoints
+    
+    :return: Dictionary with spatially masked sequential skeletal data
+    """
+    body_landmarks, hand_landmarks = __preprocess_row_sign(sign)
+    
+    # Mask hand keypoints
+    if __random_pass(mask_hands_prob):
+        num_hand_keypoints = len(hand_landmarks)
+        num_mask = int(num_hand_keypoints * mask_ratio)
+        
+        if num_mask > 0:
+            keys_to_mask = random.sample(list(hand_landmarks.keys()), num_mask)
+            for key in keys_to_mask:
+                hand_landmarks[key] = [(0.0, 0.0) for _ in hand_landmarks[key]]
+    
+    # Mask body keypoints (but avoid masking critical reference points like neck)
+    if __random_pass(mask_body_prob):
+        maskable_body_keys = [k for k in body_landmarks.keys() if k not in ['neck']]
+        num_body_keypoints = len(maskable_body_keys)
+        num_mask = int(num_body_keypoints * mask_ratio)
+        
+        if num_mask > 0:
+            keys_to_mask = random.sample(maskable_body_keys, num_mask)
+            for key in keys_to_mask:
+                body_landmarks[key] = [(0.0, 0.0) for _ in body_landmarks[key]]
+    
+    return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+
+
+def augment_temporal_crop(sign: dict, crop_ratio: float = 0.9) -> dict:
+    """
+    TEMPORAL AUGMENTATION TECHNIQUE. Randomly crops the sequence and pads or repeats to maintain length.
+    
+    :param sign: Dictionary with sequential skeletal data of the signing person
+    :param crop_ratio: Ratio of sequence to keep (default: 0.9 means keep 90%)
+    
+    :return: Dictionary with temporally cropped sequential skeletal data
+    """
+    body_landmarks, hand_landmarks = __preprocess_row_sign(sign)
+    
+    seq_len = len(next(iter(body_landmarks.values())))
+    crop_len = int(seq_len * crop_ratio)
+    
+    if crop_len >= seq_len or crop_len < 1:
+        return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+    
+    # Random start position
+    start_idx = random.randint(0, seq_len - crop_len)
+    end_idx = start_idx + crop_len
+    
+    # Crop and pad/repeat to maintain original length
+    def crop_and_pad(values, start, end, target_len):
+        cropped = values[start:end]
+        
+        # Pad to original length by repeating last frame
+        while len(cropped) < target_len:
+            cropped.append(cropped[-1])
+        
+        return cropped[:target_len]
+    
+    body_landmarks = {key: crop_and_pad(value, start_idx, end_idx, seq_len) 
+                      for key, value in body_landmarks.items()}
+    hand_landmarks = {key: crop_and_pad(value, start_idx, end_idx, seq_len) 
+                      for key, value in hand_landmarks.items()}
+    
+    return __wrap_sign_into_row(body_landmarks, hand_landmarks)
+
+
 if __name__ == "__main__":
     pass
 

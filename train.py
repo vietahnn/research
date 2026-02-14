@@ -27,7 +27,7 @@ from statistics import mean
 def get_default_args():
     parser = argparse.ArgumentParser(add_help=False)
 
-    parser.add_argument("--experiment_name", type=str, default="WLASL_spoter",
+    parser.add_argument("--experiment_name", type=str, default="WLASL_siformer_aug07",
                         help="Name of the experiment after which the logs and plots will be named")
     parser.add_argument("--num_classes", type=int, default=100, help="Number of classes to be recognized by the model")
     parser.add_argument("--batch_size", type=int, default=24, help="Number of batch size")
@@ -38,19 +38,23 @@ def get_default_args():
                         help="Seed with which to initialize all the random components of the training")
 
     # Data
-    parser.add_argument("--training_set_path", type=str, default="", help="Path to the training dataset CSV file")
+    parser.add_argument("--training_set_path", type=str, 
+                        default="datasets/WLASL100/WLASL100_train_25fps.csv",
+                        help="Path to the training dataset CSV file")
     parser.add_argument("--testing_set_path", type=str, default="", help="Path to the testing dataset CSV file")
     parser.add_argument("--experimental_train_split", type=float, default=None,
                         help="Determines how big a portion of the training set should be employed (intended for the "
                              "gradually enlarging training set experiment from the paper)")
 
     parser.add_argument("--validation_set", type=str, choices=["from-file", "split-from-train", "none"],
-                        default="none",
+                        default="from-file",
                         help="Type of validation set construction. See README for further rederence")
     parser.add_argument("--validation_set_size", type=float,
                         help="Proportion of the training set to be split as validation set, if 'validation_size' is set"
                              " to 'split-from-train'")
-    parser.add_argument("--validation_set_path", type=str, default="", help="Path to the validation dataset CSV file")
+    parser.add_argument("--validation_set_path", type=str, 
+                        default="datasets/WLASL100/WLASL100_val_25fps.csv",
+                        help="Path to the validation dataset CSV file")
 
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train the model for")
@@ -71,6 +75,10 @@ def get_default_args():
     parser.add_argument("--gaussian_mean", type=int, default=0, help="Mean parameter for Gaussian noise layer")
     parser.add_argument("--gaussian_std", type=int, default=0.001,
                         help="Standard deviation parameter for Gaussian noise layer")
+
+    # Data augmentation
+    parser.add_argument("--augmentation_prob", type=float, default=0.7,
+                        help="Probability of applying data augmentation (default: 0.7)")
 
     # Visualization
     parser.add_argument("--plot_stats", type=bool, default=True,
@@ -161,7 +169,8 @@ def train(args):
 
     # Training set
     transform = transforms.Compose([GaussianNoise(args.gaussian_mean, args.gaussian_std)])
-    train_set = CzechSLRDataset(args.training_set_path, transform=transform, augmentations=True)
+    train_set = CzechSLRDataset(args.training_set_path, transform=transform, augmentations=True,
+                                augmentations_prob=args.augmentation_prob)
 
     # Validation set
     if args.validation_set == "from-file":

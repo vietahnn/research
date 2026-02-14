@@ -155,23 +155,45 @@ class CzechSLRDataset(torch_data.Dataset):
 
         # Apply potential augmentations
         if self.augmentations and random.random() < self.augmentations_prob:
+            # Randomly select one or multiple augmentations
+            selected_aug = randrange(10)  # Expanded augmentation pool
 
-            selected_aug = randrange(5)
-
+            # Spatial augmentations (geometric transformations)
             if selected_aug == 0:
                 depth_map = augment_rotate(depth_map, (-13, 13))
 
-            if selected_aug == 1:
+            elif selected_aug == 1:
                 depth_map = augment_shear(depth_map, "perspective", (0, 0.1))
 
-            if selected_aug == 2:
+            elif selected_aug == 2:
                 depth_map = augment_shear(depth_map, "squeeze", (0, 0.15))
 
-            if selected_aug == 3:
+            elif selected_aug == 3:
                 depth_map = augment_arm_joint_rotate(depth_map, 0.3, (-4, 4))
 
-            if selected_aug == 4:
-                depth_map = depth_map
+            # Spatial masking augmentations
+            elif selected_aug == 4:
+                depth_map = augment_spatial_mask(depth_map, mask_ratio=0.15, 
+                                                  mask_hands_prob=0.4, mask_body_prob=0.3)
+
+            # Temporal augmentations
+            elif selected_aug == 5:
+                depth_map = augment_temporal_mask(depth_map, mask_ratio=0.1, mask_consecutive=True)
+
+            elif selected_aug == 6:
+                depth_map = augment_temporal_mask(depth_map, mask_ratio=0.08, mask_consecutive=False)
+
+            elif selected_aug == 7:
+                depth_map = augment_temporal_subsample(depth_map, subsample_ratio=0.85)
+
+            elif selected_aug == 8:
+                depth_map = augment_temporal_crop(depth_map, crop_ratio=0.9)
+
+            elif selected_aug == 9:
+                # Combination: Apply both spatial mask and temporal augmentation
+                depth_map = augment_spatial_mask(depth_map, mask_ratio=0.1, 
+                                                  mask_hands_prob=0.3, mask_body_prob=0.2)
+                depth_map = augment_temporal_subsample(depth_map, subsample_ratio=0.9)
 
         if self.normalize:
             depth_map = normalize_single_body_dict(depth_map)
