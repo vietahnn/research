@@ -12,7 +12,7 @@ from siformer.attention import AttentionLayer, ProbAttention, FullAttention
 from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
-from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention, UniDirectionalCrossModalAttention
 
 import uuid
 
@@ -59,13 +59,15 @@ class FeatureIsolatedTransformer(nn.Transformer):
         
         # Initialize cross-modal attention if enabled
         if self.use_cross_attention:
-            print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
-            self.cross_modal_attn = CrossModalAttentionFusion(
+            # Using uni-directional three_pairs strategy (more efficient)
+            print("Using three pairs for normalize")
+            self.cross_modal_attn = UniDirectionalCrossModalAttention(
                 d_lhand=d_model_list[0],
                 d_rhand=d_model_list[1],
                 d_body=d_model_list[2],
                 num_heads=cross_attn_heads,
-                dropout=dropout
+                dropout=dropout,
+                direction='three_pairs'
             )
         else:
             self.cross_modal_attn = None
