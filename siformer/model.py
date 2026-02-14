@@ -59,8 +59,19 @@ class FeatureIsolatedTransformer(nn.Transformer):
         
         # Initialize cross-modal attention if enabled
         if self.use_cross_attention:
-            print(f"VA Initializing One-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
-            self.cross_modal_attn = UniDirectionalCrossModalAttention(
+            if cross_attn_direction == 'bidirectional':
+                print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads")
+                self.cross_modal_attn = CrossModalAttentionFusion(
+                    d_lhand=d_model_list[0],
+                    d_rhand=d_model_list[1],
+                    d_body=d_model_list[2],
+                    num_heads=cross_attn_heads,
+                    dropout=dropout
+                )
+            else:
+                # Use uni-directional attention (more efficient)
+                print(f"Initializing Uni-directional Cross-Modal Attention: {cross_attn_direction} with {cross_attn_heads} heads")
+                self.cross_modal_attn = UniDirectionalCrossModalAttention(
                     d_lhand=d_model_list[0],
                     d_rhand=d_model_list[1],
                     d_body=d_model_list[2],
@@ -242,7 +253,8 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4, use_multi_scale=True):
+                 use_cross_attention=False, cross_attn_heads=4, cross_attn_direction='body_to_hands',
+                 use_multi_scale=True):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
@@ -257,7 +269,7 @@ class SiFormer(nn.Module):
             inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
             patience=patience, use_pyramid_encoder=False, distil=False,
             use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads,
-            use_multi_scale=use_multi_scale
+            cross_attn_direction=cross_attn_direction, use_multi_scale=use_multi_scale
         )
         print(f"\n{'='*60}")
         print(f"SiFormer Configuration:")
@@ -265,6 +277,9 @@ class SiFormer(nn.Module):
         print(f"  - Decoder Layers: {num_dec_layers}")
         print(f"  - Patience: {patience}")
         print(f"  - Cross-Modal Attention: {'ENABLED ✓' if use_cross_attention else 'DISABLED ✗'}")
+        if use_cross_attention:
+            print(f"  - Cross-Attn Direction: {cross_attn_direction}")
+            print(f"  - Cross-Attn Heads: {cross_attn_heads}")
         print(f"  - Multi-Scale Temporal: {'ENABLED ✓' if use_multi_scale else 'DISABLED ✗'}")
         print(f"{'='*60}\n")
         self.projection = nn.Linear(num_hid, num_classes)

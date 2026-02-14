@@ -93,9 +93,14 @@ def get_default_args():
     
     # Cross-Modal Attention settings
     parser.add_argument("--use_cross_attention", type=bool, default=True, 
-                        help="Determines whether to use bi-directional cross-modal attention between body parts")
-    parser.add_argument("--cross_attn_heads", type=int, default=6,
-                        help="Number of attention heads for cross-modal attention (default: 3, must divide 42 and 24)")
+                        help="Determines whether to use cross-modal attention between body parts")
+    parser.add_argument("--cross_attn_heads", type=int, default=3,
+                        help="Number of attention heads for cross-modal attention (default: 2, must divide 42 and 24)")
+    parser.add_argument("--cross_attn_direction", type=str, default='three_pairs',
+                        choices=['body_to_hands', 'hands_to_body', 'hands_bidirectional', 'bidirectional', 'three_pairs'],
+                        help="Direction of cross-modal attention: body_to_hands (body learns from hands), "
+                             "hands_to_body (hands learn from body), hands_bidirectional (only hand interaction), "
+                             "bidirectional (full bi-directional, more parameters), three_pairs (LH→Body, RH→Body, RH→LH)")
     
     # Multi-Scale Temporal Modeling settings
     parser.add_argument("--use_multi_scale", type=bool, default=True,
@@ -139,7 +144,9 @@ def train(args):
                               num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers, device=device,
                               IA_encoder=args.IA_encoder, IA_decoder=args.IA_decoder,
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
-                              cross_attn_heads=args.cross_attn_heads, use_multi_scale=args.use_multi_scale)
+                              cross_attn_heads=args.cross_attn_heads, 
+                              cross_attn_direction=args.cross_attn_direction,
+                              use_multi_scale=args.use_multi_scale)
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
                            num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers)
