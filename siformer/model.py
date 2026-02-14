@@ -12,7 +12,7 @@ from siformer.attention import AttentionLayer, ProbAttention, FullAttention
 from siformer.decoder import DecoderLayer, PBEEDecoder
 from siformer.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack, PBEEncoder
 from siformer.utils import get_sequence_list
-from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention
+from siformer.cross_modal_attention import CrossModalAttentionFusion, SimplifiedCrossModalAttention, UniDirectionalCrossModalAttention
 
 import uuid
 
@@ -29,7 +29,8 @@ class FeatureIsolatedTransformer(nn.Transformer):
                  inner_classifiers_config: list = None, patience: int = 1, use_pyramid_encoder: bool = False,
                  distil: bool = False, projections_config: list = None,
                  IA_encoder: bool = False, IA_decoder: bool = False, device=None,
-                 use_cross_attention: bool = False, cross_attn_heads: int = 4):
+                 use_cross_attention: bool = False, cross_attn_heads: int = 4,
+                 cross_attn_direction: str = 'body_to_hands'):
 
         super(FeatureIsolatedTransformer, self).__init__(sum(d_model_list), nhead_list[-1], num_encoder_layers,
                                                          num_decoder_layers, dim_feedforward, dropout, activation)
@@ -57,14 +58,27 @@ class FeatureIsolatedTransformer(nn.Transformer):
         
         # Initialize cross-modal attention if enabled
         if self.use_cross_attention:
-            print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads (requested)")
-            self.cross_modal_attn = CrossModalAttentionFusion(
-                d_lhand=d_model_list[0],
-                d_rhand=d_model_list[1],
-                d_body=d_model_list[2],
-                num_heads=cross_attn_heads,
-                dropout=dropout
-            )
+            if cross_attn_direction == 'bidirectional':
+                print(f"Initializing Bi-directional Cross-Modal Attention with {cross_attn_heads} heads")
+                self.cross_modal_attn = CrossModalAttentionFusion(
+                    d_lhand=d_model_list[0],
+                    d_rhand=d_model_list[1],
+                    d_body=d_model_list[2],
+                    num_heads=cross_attn_heads,
+                    dropout=dropout
+                )
+            else:
+                # Use uni-directional attention (more efficient)
+                print(f"Initializing One-directional Cross-Modal Attention with {cross_attn_heads} heads")
+
+                self.cross_modal_attn = UniDirectionalCrossModalAttention(
+                    d_lhand=d_model_list[0],
+                    d_rhand=d_model_list[1],
+                    d_body=d_model_list[2],
+                    num_heads=cross_attn_heads,
+                    dropout=dropout,
+                    direction=cross_attn_direction
+                )
         else:
             self.cross_modal_attn = None
             
@@ -236,7 +250,7 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4):
+                 use_cross_attention=False, cross_attn_heads=4, cross_attn_direction='body_to_hands'):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
@@ -250,9 +264,10 @@ class SiFormer(nn.Module):
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
             inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
             patience=patience, use_pyramid_encoder=False, distil=False,
-            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads
+            use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads,
+            cross_attn_direction=cross_attn_direction
         )
-        print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}")
+        print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}, direction {cross_attn_direction}")
         self.projection = nn.Linear(num_hid, num_classes)
 
     def forward(self, l_hand, r_hand, body, training):
