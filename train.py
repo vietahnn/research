@@ -101,6 +101,10 @@ def get_default_args():
                         help="Direction of cross-modal attention: body_to_hands (body learns from hands), "
                              "hands_to_body (hands learn from body), hands_bidirectional (only hand interaction), "
                              "bidirectional (full bi-directional, more parameters)")
+    
+    # Hybrid Normalization settings (Approach 4: Augmented Features)
+    parser.add_argument("--use_position", type=bool, default=True,
+                        help="Determines whether to augment hand features with position information (relative to body)")
 
     return parser
 
@@ -141,7 +145,8 @@ def train(args):
                               IA_encoder=args.IA_encoder, IA_decoder=args.IA_decoder,
                               patience=args.patience, use_cross_attention=args.use_cross_attention,
                               cross_attn_heads=args.cross_attn_heads, 
-                              cross_attn_direction=args.cross_attn_direction)
+                              cross_attn_direction=args.cross_attn_direction,
+                              use_position=args.use_position)
     else:
         slr_model = SpoTer(num_classes=args.num_classes, num_hid=args.num_seq_elements,
                            num_enc_layers=args.num_enc_layers, num_dec_layers=args.num_dec_layers)
@@ -161,11 +166,12 @@ def train(args):
 
     # Training set
     transform = transforms.Compose([GaussianNoise(args.gaussian_mean, args.gaussian_std)])
-    train_set = CzechSLRDataset(args.training_set_path, transform=transform, augmentations=True)
+    train_set = CzechSLRDataset(args.training_set_path, transform=transform, augmentations=True, 
+                                use_position=args.use_position)
 
     # Validation set
     if args.validation_set == "from-file":
-        val_set = CzechSLRDataset(args.validation_set_path)
+        val_set = CzechSLRDataset(args.validation_set_path, use_position=args.use_position)
         val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=True, generator=g,
                                 num_workers=args.num_worker)
 
@@ -182,7 +188,7 @@ def train(args):
 
     # Testing set
     if args.testing_set_path:
-        eval_set = CzechSLRDataset(args.testing_set_path)
+        eval_set = CzechSLRDataset(args.testing_set_path, use_position=args.use_position)
         eval_loader = DataLoader(eval_set, batch_size=args.batch_size, shuffle=True, generator=g,
                                  num_workers=args.num_worker)
 

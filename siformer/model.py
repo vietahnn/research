@@ -250,25 +250,61 @@ class SpoTer(nn.Module):
 class SiFormer(nn.Module):
     def __init__(self, num_classes, num_hid=108, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
                  seq_len=204, device=None, IA_encoder = True, IA_decoder = False,
-                 use_cross_attention=False, cross_attn_heads=4, cross_attn_direction='body_to_hands'):
+                 use_cross_attention=False, cross_attn_heads=4, cross_attn_direction='body_to_hands', use_position=True):
         super(SiFormer, self).__init__()
         print("Feature isolated transformer")
+        
+        # Calculate dimensions based on whether position features are used
+        # Hands: 21 landmarks * (2 or 4 coords), Body: 12 landmarks * 2 coords
+        self.use_position = use_position
+        hand_coords = 4 if use_position else 2  # x, y, rel_x, rel_y OR x, y
+        d_hand = 21 * hand_coords  # 84 if position enabled, 42 otherwise
+        d_body = 12 * 2  # 24 (body doesn't get position features)
+        
+        # Attention heads must divide d_model evenly
+        # For d_hand=42: divisors are 1,2,3,6,7,14,21,42 → use 3
+        # For d_hand=84: divisors are 1,2,3,4,6,7,12,14,21,28,42,84 → use 4 or 6 or 12
+        nhead_hand = 4 if use_position else 3  # 84 % 4 = 0, 42 % 3 = 0
+        nhead_body = 2  # 24 % 2 = 0
+        total_d = d_hand + d_hand + d_body
+        # For total: 42+42+24=108, 84+84+24=192
+        # 108 divisors: 1,2,3,4,6,9,12 → use 9
+        # 192 divisors: 1,2,3,4,6,8,12,16,24 → use 12
+        nhead_total = 12 if use_position else 9
+        
+        # Total hidden dimension (must match d_model in transformer)
+        # Override num_hid if use_position is True to match total_d
+        actual_num_hid = total_d  # Always use total_d for consistency
+        
         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
-        self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
-        self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=42))
-        self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=24))
+        self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=d_hand))
+        self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=d_hand))
+        self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=d_body))
 
-        self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
+        self.class_query = nn.Parameter(torch.rand(1, 1, actual_num_hid))
         self.transformer = FeatureIsolatedTransformer(
-            [42, 42, 24], [3, 3, 2, 9], num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
+            [d_hand, d_hand, d_body], [nhead_hand, nhead_hand, nhead_body, nhead_total], 
+            num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
-            inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
+            inner_classifiers_config=[actual_num_hid, num_classes], projections_config=[seq_len, 1],  device=device,
             patience=patience, use_pyramid_encoder=False, distil=False,
             use_cross_attention=use_cross_attention, cross_attn_heads=cross_attn_heads,
             cross_attn_direction=cross_attn_direction
         )
-        print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}, cross_attn {use_cross_attention}, direction {cross_attn_direction}")
-        self.projection = nn.Linear(num_hid, num_classes)
+        print(f"\n{'='*60}")
+        print(f"SiFormer Configuration:")
+        print(f"  - Encoder Layers: {num_enc_layers}")
+        print(f"  - Decoder Layers: {num_dec_layers}")
+        print(f"  - Patience: {patience}")
+        print(f"  - Position Features: {'ENABLED ✓' if use_position else 'DISABLED ✗'}")
+        if use_position:
+            print(f"    → Hand dimensions: {d_hand} (21 landmarks × 4 coords)")
+            print(f"    → Channels: [x, y, rel_x, rel_y]")
+        else:
+            print(f"    → Hand dimensions: {d_hand} (21 landmarks × 2 coords)")
+        print(f"  - Cross-Modal Attention: {'ENABLED ✓' if use_cross_attention else 'DISABLED ✗'}")
+        print(f"{'='*60}\n")
+        self.projection = nn.Linear(actual_num_hid, num_classes)
 
     def forward(self, l_hand, r_hand, body, training):
         batch_size = l_hand.size(0)
