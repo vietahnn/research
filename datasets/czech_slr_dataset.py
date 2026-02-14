@@ -1,5 +1,6 @@
 import ast
 import torch
+import numpy as np
 
 import pandas as pd
 import torch.utils.data as torch_data
@@ -91,6 +92,83 @@ def dictionary_to_tensor(landmarks_dict: dict, identifier_lst: list) -> torch.Te
     return torch.from_numpy(output)
 
 
+def compute_position_features(depth_map_dict: dict, reference_points: list = ['nose', 'neck']) -> tuple:
+    """
+    Compute position features (relative to body reference point) for hands.
+    
+    Args:
+        depth_map_dict: Dictionary containing landmark coordinates
+        reference_points: List of body points to use as reference (will average them)
+        
+    Returns:
+        left_hand_pos: (T, 2) - Normalized position of left wrist relative to reference
+        right_hand_pos: (T, 2) - Normalized position of right wrist relative to reference
+    """
+    # Get sequence length
+    first_key = list(depth_map_dict.keys())[0]
+    sequence_len = len(depth_map_dict[first_key])
+    
+    # Compute reference point (average of nose and neck)
+    reference_coords = np.zeros((sequence_len, 2))
+    valid_refs = 0
+    
+    for ref_point in reference_points:
+        if ref_point in depth_map_dict:
+            ref_data = np.array(depth_map_dict[ref_point])  # (T, 2)
+            reference_coords += ref_data
+            valid_refs += 1
+    
+    if valid_refs > 0:
+        reference_coords /= valid_refs
+    
+    # Get wrist positions
+    left_wrist_key = 'wrist_0'  # Left hand wrist
+    right_wrist_key = 'wrist_1'  # Right hand wrist
+    
+    left_wrist = np.array(depth_map_dict.get(left_wrist_key, np.zeros((sequence_len, 2))))
+    right_wrist = np.array(depth_map_dict.get(right_wrist_key, np.zeros((sequence_len, 2))))
+    
+    # Compute relative positions
+    left_hand_pos = left_wrist - reference_coords
+    right_hand_pos = right_wrist - reference_coords
+    
+    # Normalize to [-1, 1] range (assuming image size ~640x480)
+    # This makes position features scale-invariant
+    left_hand_pos = left_hand_pos / np.array([320.0, 240.0])
+    right_hand_pos = right_hand_pos / np.array([320.0, 240.0])
+    
+    # Clip to [-1, 1]
+    left_hand_pos = np.clip(left_hand_pos, -1.0, 1.0)
+    right_hand_pos = np.clip(right_hand_pos, -1.0, 1.0)
+    
+    return left_hand_pos, right_hand_pos
+
+
+def augment_with_position(hand_tensor: torch.Tensor, position_features: np.ndarray) -> torch.Tensor:
+    """
+    Augment hand tensor with position features.
+    
+    Args:
+        hand_tensor: (T, 21, 2) - Shape-normalized hand landmarks
+        position_features: (T, 2) - Position of wrist relative to body
+        
+    Returns:
+        augmented: (T, 21, 4) - [x, y, rel_x, rel_y]
+    """
+    T, N, C = hand_tensor.shape
+    
+    # Convert position features to tensor
+    pos_tensor = torch.from_numpy(position_features).float()  # (T, 2)
+    
+    # Expand position to all landmarks (same position for all points in a hand)
+    pos_expanded = pos_tensor.unsqueeze(1).expand(T, N, 2)  # (T, 21, 2)
+    
+    # Concatenate: [shape_coords, position_coords]
+    augmented = torch.cat([hand_tensor, pos_expanded], dim=-1)  # (T, 21, 4)
+    
+    return augmented
+
+
 def isolate_single_body_dit(row: dict):
     body_identifiers = BODY_IDENTIFIERS  # [0:6] on face [6:] on body
 
@@ -119,12 +197,13 @@ class CzechSLRDataset(torch_data.Dataset):
     labels: [np.ndarray]
 
     def __init__(self, dataset_filename: str, num_labels=5, transform=None, augmentations=False,
-                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None):
+                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None, use_position=False):
         """
         Initiates the HPOESDataset with the pre-loaded data from the h5 file.
 
         :param dataset_filename: Path to the h5 file
         :param transform: Any data transformation to be applied (default: None)
+        :param use_position: Whether to augment hand data with position features (default: False)
         """
 
         loaded_data = load_dataset(file_location=dataset_filename, num_remove=num_remove, remove_from=remove_from)
@@ -139,6 +218,12 @@ class CzechSLRDataset(torch_data.Dataset):
         self.augmentations = augmentations
         self.augmentations_prob = augmentations_prob
         self.normalize = normalize
+        self.use_position = use_position
+        
+        if self.use_position:
+            print(f"✓ CzechSLRDataset: Position features ENABLED (hands will have 4 channels: x, y, rel_x, rel_y)")
+        else:
+            print(f"  CzechSLRDataset: Position features DISABLED (hands will have 2 channels: x, y only)")
 
     def __getitem__(self, idx):
         """
@@ -177,6 +262,10 @@ class CzechSLRDataset(torch_data.Dataset):
             depth_map = normalize_single_body_dict(depth_map)
             depth_map = normalize_single_hand_dict(depth_map)
 
+        # Compute position features BEFORE isolating hands (need full depth_map for reference points)
+        if self.use_position:
+            left_pos, right_pos = compute_position_features(depth_map)
+        
         l_hand_depth_map, l_hand_identifiers = isolate_single_hand(depth_map, 0)
         r_hand_depth_map, r_hand_identifiers = isolate_single_hand(depth_map, 1)
         body_depth_map, body_identifiers = isolate_single_body_dit(depth_map)
@@ -184,11 +273,17 @@ class CzechSLRDataset(torch_data.Dataset):
         l_hand_depth_map = dictionary_to_tensor(l_hand_depth_map, l_hand_identifiers) - 0.5
         r_hand_depth_map = dictionary_to_tensor(r_hand_depth_map, r_hand_identifiers) - 0.5
         body_depth_map = dictionary_to_tensor(body_depth_map, body_identifiers) - 0.5
+        
+        # Augment with position features if enabled
+        if self.use_position:
+            l_hand_depth_map = augment_with_position(l_hand_depth_map, left_pos)
+            r_hand_depth_map = augment_with_position(r_hand_depth_map, right_pos)
+            # Body keeps 2 channels (no position augmentation for body)
 
         if self.transform:
-            l_hand_depth_map = self.transform(l_hand_depth_map)  # (B, 204, 21, 2)
-            r_hand_depth_map = self.transform(r_hand_depth_map)  # (B, 204, 21, 2)
-            body_depth_map = self.transform(body_depth_map)  # (B, 204, 12, 2)
+            l_hand_depth_map = self.transform(l_hand_depth_map)  # (T, 21, 4) or (T, 21, 2)
+            r_hand_depth_map = self.transform(r_hand_depth_map)  # (T, 21, 4) or (T, 21, 2)
+            body_depth_map = self.transform(body_depth_map)  # (T, 12, 2)
 
         # print(f"body_depth_map.shape {body_depth_map.shape}")
         # print(f"l_hand_depth_map.shape {l_hand_depth_map.shape}")
