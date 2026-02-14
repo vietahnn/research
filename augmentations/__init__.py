@@ -381,7 +381,8 @@ def augment_temporal_crop(sign: dict, crop_ratio: float = 0.9) -> dict:
     
     # Crop and pad/repeat to maintain original length
     def crop_and_pad(values, start, end, target_len):
-        cropped = values[start:end]
+        # Convert to list to handle both numpy arrays and lists
+        cropped = list(values[start:end])
         
         # Pad to original length by repeating last frame
         while len(cropped) < target_len:
