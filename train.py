@@ -102,7 +102,7 @@ def get_default_args():
                         help="Determines whether to use Multi-Scale Temporal Modeling for varying signing speeds")
     
     # Hybrid Normalization settings (Approach 4: Augmented Features)
-    parser.add_argument("--use_position", type=bool, default=False,
+    parser.add_argument("--use_position", type=bool, default=True,
                         help="Determines whether to augment hand features with position information (relative to body)")
 
     return parser

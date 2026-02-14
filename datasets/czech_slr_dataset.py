@@ -197,7 +197,7 @@ class CzechSLRDataset(torch_data.Dataset):
     labels: [np.ndarray]
 
     def __init__(self, dataset_filename: str, num_labels=5, transform=None, augmentations=False,
-                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None, use_position=False):
+                 augmentations_prob=0.5, normalize=True, num_remove=0, remove_from=None, use_position=True):
         """
         Initiates the HPOESDataset with the pre-loaded data from the h5 file.
 
@@ -221,6 +221,7 @@ class CzechSLRDataset(torch_data.Dataset):
         self.use_position = use_position
         
         if self.use_position:
+            print("using right")
             print(f"✓ CzechSLRDataset: Position features ENABLED (hands will have 4 channels: x, y, rel_x, rel_y)")
         else:
             print(f"  CzechSLRDataset: Position features DISABLED (hands will have 2 channels: x, y only)")
